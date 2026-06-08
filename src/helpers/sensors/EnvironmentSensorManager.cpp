@@ -91,6 +91,17 @@ static Adafruit_SHTC3 SHTC3;
 static SensirionI2cSht4x SHT4X;
 #endif
 
+#if ENV_INCLUDE_SGP30
+#ifndef TELEM_SGP30_ADDRESS
+#define TELEM_SGP30_ADDRESS 0x58
+#endif
+#ifndef TELEM_SGP30_READ_INTERVAL_MS
+#define TELEM_SGP30_READ_INTERVAL_MS 1000
+#endif
+#include <Adafruit_SGP30.h>
+static Adafruit_SGP30 SGP30;
+#endif
+
 #if ENV_INCLUDE_LPS22HB
 #include <Arduino_LPS22HB.h>
 LPS22HBClass LPS22HB(*TELEM_WIRE);
@@ -327,6 +338,55 @@ static void query_sht4x(uint8_t ch, uint8_t, CayenneLPP& lpp) {
   if (SHT4X.measureLowestPrecision(temperature, humidity) == 0) {
     lpp.addTemperature(ch, temperature);
     lpp.addRelativeHumidity(ch, humidity);
+  }
+}
+#endif
+
+#if ENV_INCLUDE_SGP30
+static bool sgp30_sample_ready = false;
+static bool sgp30_initialized = false;
+static uint16_t sgp30_last_eco2 = 0;
+static uint16_t sgp30_last_tvoc = 0;
+static uint32_t sgp30_last_sample_ms = 0;
+
+static void poll_sgp30(bool force = false) {
+  if (!sgp30_initialized) {
+    return;
+  }
+
+  const uint32_t now = millis();
+  if (!force && sgp30_last_sample_ms != 0 && (uint32_t)(now - sgp30_last_sample_ms) < TELEM_SGP30_READ_INTERVAL_MS) {
+    return;
+  }
+
+  if (!SGP30.IAQmeasure()) {
+    sgp30_last_sample_ms = now;
+    sgp30_sample_ready = false;
+    return;
+  }
+
+  sgp30_last_sample_ms = now;
+  sgp30_last_eco2 = SGP30.eCO2;
+  sgp30_last_tvoc = SGP30.TVOC;
+  sgp30_sample_ready = true;
+}
+
+static uint8_t init_sgp30(TwoWire* wire, uint8_t) {
+  sgp30_sample_ready = false;
+  sgp30_last_sample_ms = 0;
+  sgp30_initialized = SGP30.begin(wire, true);
+  return sgp30_initialized ? 2 : 0;
+}
+static void query_sgp30(uint8_t ch, uint8_t sub_ch, CayenneLPP& lpp) {
+  poll_sgp30();
+  if (!sgp30_sample_ready) {
+    return;
+  }
+
+  if (sub_ch == 0) {
+    lpp.addGenericSensor(ch, sgp30_last_eco2);
+  } else {
+    lpp.addGenericSensor(ch, sgp30_last_tvoc);
   }
 }
 #endif
@@ -572,6 +632,9 @@ static const SensorDef SENSOR_TABLE[] = {
 #endif
 #if ENV_INCLUDE_SHT4X
   { TELEM_SHT4X_ADDRESS,   "SHT4X",        init_sht4x,    query_sht4x    },
+#endif
+#if ENV_INCLUDE_SGP30
+  { TELEM_SGP30_ADDRESS,   "SGP30",        init_sgp30,    query_sgp30    },
 #endif
 #if ENV_INCLUDE_LPS22HB
   { 0x5C,                  "LPS22HB",      init_lps22hb,  query_lps22hb  },
@@ -885,7 +948,7 @@ void EnvironmentSensorManager::stop_gps() {
 }
 #endif // ENV_INCLUDE_GPS
 
-#if ENV_INCLUDE_GPS || defined(ENV_INCLUDE_BME680_BSEC)
+#if ENV_INCLUDE_GPS || defined(ENV_INCLUDE_BME680_BSEC) || ENV_INCLUDE_SGP30
 void EnvironmentSensorManager::loop() {
 
   #if ENV_INCLUDE_GPS
@@ -939,5 +1002,9 @@ void EnvironmentSensorManager::loop() {
     }
   }
   #endif  // ENV_INCLUDE_BME680_BSEC
+
+  #if ENV_INCLUDE_SGP30
+  poll_sgp30();
+  #endif  // ENV_INCLUDE_SGP30
 }
-#endif // ENV_INCLUDE_GPS || ENV_INCLUDE_BME680_BSEC
+#endif // ENV_INCLUDE_GPS || ENV_INCLUDE_BME680_BSEC || ENV_INCLUDE_SGP30

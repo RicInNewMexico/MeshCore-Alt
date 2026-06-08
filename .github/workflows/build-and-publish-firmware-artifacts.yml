@@ -95,6 +95,9 @@ jobs:
 
           ]))
 
+          prefix_excludes = []
+          contains_excludes = []
+
           def is_excluded(variant: str) -> bool:
               v = norm(variant)
               if v in exact_excludes:
@@ -121,8 +124,8 @@ jobs:
               role = role_match.group(1)
               variant = env_name[:role_match.start()]
 
-                # Explicitly exclude all repeater_bridge role builds.
-                if re.search(r'(^|[_-])repeater[_-]bridge(?:[_-]|$)', env_name.lower()):
+              # Explicitly exclude all repeater_bridge role builds.
+              if re.search(r'(^|[_-])repeater[_-]bridge(?:[_-]|$)', env_name.lower()):
                   continue
 
               # Explicitly exclude all kiss_modem role builds.
@@ -463,6 +466,27 @@ jobs:
             --repo "$ARTIFACT_REPO" \
             --title "${{ steps.release_tag.outputs.release_tag }}" \
             --notes "Automated firmware artifact bundle for ${{ github.repository }}@${{ github.sha }}"
+
+      - name: Mirror Zip Packages Into Artifact Repository
+        shell: bash
+        run: |
+          gh repo clone "$ARTIFACT_REPO" artifact-repo -- --depth 1
+
+          release_dir="artifact-repo/${{ steps.release_tag.outputs.release_tag }}"
+          mkdir -p "$release_dir"
+          cp packages/*.zip "$release_dir"/
+
+          cd artifact-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "${{ steps.release_tag.outputs.release_tag }}"
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit in artifact repository."
+          else
+            git commit -m "Add firmware artifacts ${{ steps.release_tag.outputs.release_tag }}"
+            git push origin HEAD:main
+          fi
 
       - name: Upload Workflow Packages
         uses: actions/upload-artifact@v7

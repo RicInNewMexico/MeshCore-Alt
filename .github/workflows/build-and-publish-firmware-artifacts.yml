@@ -472,20 +472,14 @@ jobs:
           print(f'Release tag: {release_tag}')
           PY
 
-      - name: Publish Release To Artifact Repository
-        if: steps.successful_builds.outputs.has_artifacts == 'true'
-        shell: bash
-        run: |
-          gh release create "${{ steps.release_tag.outputs.release_tag }}" packages/*.zip \
-            --repo "$ARTIFACT_REPO" \
-            --title "${{ steps.release_tag.outputs.release_tag }}" \
-            --notes "Automated firmware artifact bundle for ${{ github.repository }}@${{ github.sha }}"
-
       - name: Mirror Zip Packages Into Artifact Repository
         if: steps.successful_builds.outputs.has_artifacts == 'true'
         shell: bash
         run: |
-          gh repo clone "$ARTIFACT_REPO" artifact-repo -- --depth 1
+          # --depth 1 fails on an empty repository; fall back to a full clone in that case
+          if ! gh repo clone "$ARTIFACT_REPO" artifact-repo -- --depth 1 2>/dev/null; then
+            gh repo clone "$ARTIFACT_REPO" artifact-repo
+          fi
 
           release_dir="artifact-repo/${{ steps.release_tag.outputs.release_tag }}"
           mkdir -p "$release_dir"
@@ -502,6 +496,15 @@ jobs:
             git commit -m "Add firmware artifacts ${{ steps.release_tag.outputs.release_tag }}"
             git push origin HEAD:main
           fi
+
+      - name: Publish Release To Artifact Repository
+        if: steps.successful_builds.outputs.has_artifacts == 'true'
+        shell: bash
+        run: |
+          gh release create "${{ steps.release_tag.outputs.release_tag }}" packages/*.zip \
+            --repo "$ARTIFACT_REPO" \
+            --title "${{ steps.release_tag.outputs.release_tag }}" \
+            --notes "Automated firmware artifact bundle for ${{ github.repository }}@${{ github.sha }}"
 
       - name: Upload Workflow Packages
         if: steps.successful_builds.outputs.has_artifacts == 'true'

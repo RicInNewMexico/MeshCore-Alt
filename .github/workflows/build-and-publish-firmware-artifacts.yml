@@ -4,16 +4,10 @@ permissions:
   contents: read
 
 on:
-  workflow_call:
-    inputs:
-      platform_filter:
-        description: PlatformIO platform constant to include (for example ESP32_PLATFORM)
-        required: true
-        type: string
-      workflow_label:
-        description: Human-friendly label for release titles and notes
-        required: true
-        type: string
+  workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
   discover:
@@ -31,8 +25,6 @@ jobs:
       - name: Discover Build Matrix
         id: discover
         shell: bash
-        env:
-          PLATFORM_FILTER: ${{ inputs.platform_filter }}
         run: |
           pio project config --json-output > pio-config.json
 
@@ -43,8 +35,6 @@ jobs:
 
           with open('pio-config.json', 'r', encoding='utf-8') as f:
               cfg = json.load(f)
-
-            platform_filter = os.environ.get('PLATFORM_FILTER', '').strip()
 
           role_re = re.compile(r'_(companion_radio_(?:usb|ble)|room_server|repeater)(?:_|$)')
           platform_re = re.compile(r'(ESP32_PLATFORM|NRF52_PLATFORM|STM32_PLATFORM|RP2040_PLATFORM)')
@@ -77,9 +67,6 @@ jobs:
                   if m:
                       platform = m.group(1)
                       break
-
-                if platform_filter and platform != platform_filter:
-                  continue
 
               matrix.append(
                   {
@@ -188,7 +175,6 @@ jobs:
     env:
       ARTIFACT_REPO: ${{ github.repository_owner }}/MeshCore-Alt-Artifacts
       GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
-      WORKFLOW_LABEL: ${{ inputs.workflow_label }}
     steps:
       - name: Checkout Source
         uses: actions/checkout@v6
@@ -381,8 +367,8 @@ jobs:
         run: |
           gh release create "${{ steps.release_tag.outputs.release_tag }}" packages/*.zip \
             --repo "$ARTIFACT_REPO" \
-            --title "$WORKFLOW_LABEL ${{ steps.release_tag.outputs.release_tag }}" \
-            --notes "Automated firmware artifact bundle for $WORKFLOW_LABEL on ${{ github.repository }}@${{ github.sha }}"
+            --title "${{ steps.release_tag.outputs.release_tag }}" \
+            --notes "Automated firmware artifact bundle for ${{ github.repository }}@${{ github.sha }}"
 
       - name: Upload Workflow Packages
         uses: actions/upload-artifact@v7

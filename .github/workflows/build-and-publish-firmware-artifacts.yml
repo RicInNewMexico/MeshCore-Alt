@@ -431,29 +431,23 @@ jobs:
           import os
           import re
           import subprocess
-          from datetime import datetime, timezone
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
 
-          tags = subprocess.check_output(
-              ['git', 'for-each-ref', '--sort=-creatordate', '--format=%(refname:short)', 'refs/tags'],
-              text=True,
-          ).splitlines()
+          build_date = datetime.now(ZoneInfo('America/Denver')).strftime('%Y%m%d')
 
-          mesh_version = None
-          matched_tag = None
-          for tag in tags:
-              m = re.search(r'(v\d+\.\d+\.\d+)$', tag)
-              if m:
-                  mesh_version = m.group(1)
-                  matched_tag = tag
-                  break
+          main_ref = subprocess.check_output(
+            ['git', 'ls-remote', 'origin', 'refs/heads/main'],
+            text=True,
+          ).strip()
+          if not main_ref:
+            raise RuntimeError('Could not determine the latest commit on origin/main.')
 
-          if mesh_version is None:
-              raise RuntimeError('Could not determine meshcore version from the most recent git tags.')
+          main_sha = main_ref.split()[0][:8]
+          if len(main_sha) != 8:
+            raise RuntimeError(f'Could not determine an 8-character commit id from origin/main: {main_ref}')
 
-          print(f'Using mesh version {mesh_version} from tag {matched_tag}')
-
-          build_date = datetime.now(timezone.utc).strftime('%Y%m%d')
-          prefix = f'{mesh_version}-Alt-{build_date}'
+          print(f'Using origin/main commit {main_sha} for artifact tag naming')
 
           artifact_repo = os.environ['ARTIFACT_REPO']
           release_json = subprocess.check_output(
@@ -463,18 +457,17 @@ jobs:
           existing = [r['tagName'] for r in json.loads(release_json)]
 
           max_seq = 0
-          pat = re.compile(r'^' + re.escape(prefix) + r'(\d{2})$')
+          pat = re.compile(r'^' + re.escape(build_date) + r'(\d{2})-[0-9a-fA-F]{8}$')
           for tag in existing:
               m = pat.match(tag)
               if m:
                   max_seq = max(max_seq, int(m.group(1)))
 
           next_seq = max_seq + 1
-          release_tag = f'{prefix}{next_seq:02d}'
+          release_tag = f'{build_date}{next_seq:02d}-{main_sha}'
 
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
               out.write(f'release_tag={release_tag}\n')
-              out.write(f'mesh_version={mesh_version}\n')
 
           print(f'Release tag: {release_tag}')
           PY

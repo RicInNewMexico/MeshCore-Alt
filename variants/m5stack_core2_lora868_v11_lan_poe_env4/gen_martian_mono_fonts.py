@@ -13,6 +13,7 @@ Usage:
 import io
 import os
 import sys
+import time
 import zipfile
 import urllib.request
 import subprocess
@@ -28,6 +29,7 @@ FONT_FILENAME_CANDIDATES = [
     "MartianMonoNFM-Regular.ttf",
 ]
 FONT_LOCAL_PATH = os.path.join(SCRIPT_DIR, "MartianMonoNerdFont-Regular.ttf")
+DOWNLOAD_RETRIES = 3
 
 FIRST_CHAR = 32   # space
 LAST_CHAR  = 126  # ~
@@ -58,14 +60,22 @@ def ensure_deps():
 # Font download
 # ---------------------------------------------------------------------------
 
-def download_font() -> str:
-    if os.path.exists(FONT_LOCAL_PATH):
-        print(f"Font cache: {FONT_LOCAL_PATH}")
-        return FONT_LOCAL_PATH
+def _download_font_zip_bytes() -> bytes:
+    last_error = None
+    for attempt in range(1, DOWNLOAD_RETRIES + 1):
+        try:
+            print(f"Downloading MartianMono.zip from GitHub (attempt {attempt}/{DOWNLOAD_RETRIES}) ...")
+            with urllib.request.urlopen(FONT_URL) as resp:
+                return resp.read()
+        except Exception as exc:
+            last_error = exc
+            if attempt < DOWNLOAD_RETRIES:
+                time.sleep(1)
+    raise RuntimeError(f"Failed to download font archive after {DOWNLOAD_RETRIES} attempts: {last_error}")
 
-    print(f"Downloading MartianMono.zip from GitHub …")
-    with urllib.request.urlopen(FONT_URL) as resp:
-        data = resp.read()
+
+def download_font() -> str:
+    data = _download_font_zip_bytes()
 
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         names = zf.namelist()

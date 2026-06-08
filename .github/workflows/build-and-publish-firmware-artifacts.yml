@@ -442,19 +442,24 @@ jobs:
           import subprocess
           from datetime import datetime, timezone
 
-          tags = subprocess.check_output(['git', 'tag', '--list'], text=True).splitlines()
-          versions = []
-          for t in tags:
-              m = re.search(r'v(\d+\.\d+\.\d+)$', t)
+            tags = subprocess.check_output(
+              ['git', 'for-each-ref', '--sort=-creatordate', '--format=%(refname:short)', 'refs/tags'],
+              text=True,
+            ).splitlines()
+
+            mesh_version = None
+            matched_tag = None
+            for tag in tags:
+              m = re.search(r'(v\d+\.\d+\.\d+)$', tag)
               if m:
-                  parts = tuple(int(p) for p in m.group(1).split('.'))
-                  versions.append(parts)
+                mesh_version = m.group(1)
+                matched_tag = tag
+                break
 
-          if not versions:
-              raise RuntimeError('Could not determine meshcore version from git tags.')
+            if mesh_version is None:
+              raise RuntimeError('Could not determine meshcore version from the most recent git tags.')
 
-          latest = max(versions)
-          mesh_version = f'v{latest[0]}.{latest[1]}.{latest[2]}'
+            print(f'Using mesh version {mesh_version} from tag {matched_tag}')
 
           build_date = datetime.now(timezone.utc).strftime('%Y%m%d')
           prefix = f'{mesh_version}-Alt-{build_date}'

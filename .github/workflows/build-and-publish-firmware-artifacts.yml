@@ -55,7 +55,7 @@ jobs:
               cfg = json.load(f)
 
           role_re = re.compile(r'_(companion_radio_(?:usb|ble)|room_server|repeater|kiss_modem)(?:_|$)')
-          platform_re = re.compile(r'(ESP32_PLATFORM|NRF52_PLATFORM)')
+          platform_re = re.compile(r'(ESP32_PLATFORM|NRF52_PLATFORM|STM32_PLATFORM|RP2040_PLATFORM)')
 
           def norm(s: str) -> str:
               return ''.join(ch for ch in s.lower() if ch.isalnum())
@@ -129,7 +129,7 @@ jobs:
                   continue
 
               # Explicitly exclude all kiss_modem role builds.
-              if role == 'kiss_modem':
+              if role == 'kiss_modem' or re.search(r'(^|[_-])kiss[_-]modem(?:[_-]|$)', env_name.lower()):
                   continue
 
               if is_excluded(variant):
@@ -147,6 +147,10 @@ jobs:
                   if m:
                       platform = m.group(1)
                       break
+
+              # Explicitly exclude STM32 and RP2040 targets from CI matrix.
+              if platform in ('STM32_PLATFORM', 'RP2040_PLATFORM'):
+                  continue
 
               matrix.append(
                   {

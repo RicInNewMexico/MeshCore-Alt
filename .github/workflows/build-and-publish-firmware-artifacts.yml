@@ -79,18 +79,20 @@ jobs:
               'waveshare_rp2040_lora',
               'promicro',
               'lilygo_teth_elite',
-          ]))
-          prefix_excludes = list(map(norm, [
-              'gat562',
-              'generic',
-              'ikoka',
+              'gat562_30s_mesh_kit',
+              'gat562_mesh_evb_pro',
+              'gat562_mesh_tracker_pro',
+              'gat562_mesh_watch13',
+              'generic-e22',
+              'generic_espnow',
+              'ikoka_handheld_nrf',
+              'ikoka_nano_nrf',
+              'ikoka_stick_nrf',
               'lilygo_t3s3',
+              'lilygo_t3s3_sx1276',
               'station_g2',
-          ]))
-          contains_excludes = list(map(norm, [
-              'sensecap_indicator',
-              'nibble_screen_connect',
-              'rak_wishmesh_tag',
+              'station_g3_esp32',
+
           ]))
 
           def is_excluded(variant: str) -> bool:

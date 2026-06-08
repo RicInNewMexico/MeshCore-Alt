@@ -2,11 +2,19 @@
 #include <helpers/TxtDataHelpers.h>
 #include "../MyMesh.h"
 #include "target.h"
+
+#ifndef CORE2_ENV_DASHBOARD
+  #define CORE2_ENV_DASHBOARD 0
+#endif
+
 #if defined(ARDUINO_M5STACK_CORE2)
 #include <M5Core2.h>
 #include <SD.h>
 #include "ProtoNerdFont.h"
 #include "ProtoNerdValueFont.h"
+#if CORE2_ENV_DASHBOARD
+  #include <RTClib.h>
+#endif
 #ifndef CORE2_TOUCH_DEBUG_LOGGING
   #define CORE2_TOUCH_DEBUG_LOGGING 1
 #endif
@@ -67,6 +75,73 @@
 #include "icons.h"
 
 #if defined(ARDUINO_M5STACK_CORE2)
+#if CORE2_ENV_DASHBOARD
+static void formatDashboardValue(char* out, size_t out_len, bool has_value, float value, const char* unit) {
+  if (!has_value) {
+    snprintf(out, out_len, "-- %s", unit);
+    return;
+  }
+  if (value > 999.0f || value < -999.0f) {
+    snprintf(out, out_len, "%.0f %s", value, unit);
+  } else {
+    snprintf(out, out_len, "%.1f %s", value, unit);
+  }
+  for (char* p = out; *p; ++p) {
+    if (*p == ',') {
+      *p = '.';
+    }
+  }
+}
+
+static void drawDashboardCardValue(M5Display& lcd, int x, int y, int w, int h, uint16_t card, const char* value) {
+  const char* unit = strchr(value, ' ');
+  constexpr size_t kMaxValueChars = 6;
+  constexpr int kDashboardValueFontHeight = 29;
+  const int value_top = y + 18;
+  const int value_height = h - 28;
+  const int unit_top = y + h - 20;
+  const int value_center_x = x + (w / 2);
+  const int value_right = x + w - 8;
+  const int number_y = y + ((h - kDashboardValueFontHeight) / 2);
+
+  lcd.fillRect(x + 2, value_top, w - 4, value_height, card);
+
+  if (unit) {
+    char number[20];
+    size_t number_len = static_cast<size_t>(unit - value);
+    if (number_len >= sizeof(number)) {
+      number_len = sizeof(number) - 1;
+    }
+    memcpy(number, value, number_len);
+    number[number_len] = 0;
+    if (number_len > kMaxValueChars) {
+      number[kMaxValueChars] = 0;
+    }
+    while (*unit == ' ') {
+      ++unit;
+    }
+
+    const int number_w = proto_nerd_value_font::textWidth(number, 1);
+    const int number_x = value_center_x - (number_w / 2);
+    proto_nerd_value_font::drawTextTransparent(lcd, number_x, number_y, number, TFT_BLACK, 1);
+
+    const int unit_w = proto_nerd_font::textWidth(unit, 1);
+    const int unit_x = value_right - unit_w;
+    proto_nerd_font::drawTextTransparent(lcd, unit_x, unit_top, unit, TFT_BLACK, 1);
+  } else {
+    char number[20];
+    strncpy(number, value, sizeof(number) - 1);
+    number[sizeof(number) - 1] = 0;
+    if (strlen(number) > kMaxValueChars) {
+      number[kMaxValueChars] = 0;
+    }
+    const int number_w = proto_nerd_value_font::textWidth(number, 1);
+    const int number_x = value_center_x - (number_w / 2);
+    proto_nerd_value_font::drawTextTransparent(lcd, number_x, number_y, number, TFT_BLACK, 1);
+  }
+}
+#endif
+
 static void formatStorageBytes(char* out, size_t out_len, uint64_t bytes) {
   if (bytes >= (1024ULL * 1024ULL * 1024ULL)) {
     snprintf(out, out_len, "%.2f GB", bytes / 1073741824.0);
@@ -74,6 +149,235 @@ static void formatStorageBytes(char* out, size_t out_len, uint64_t bytes) {
     snprintf(out, out_len, "%.0f MB", bytes / 1048576.0);
   }
 }
+
+#if CORE2_ENV_DASHBOARD
+static bool readCsvLine(File& file, char* out, size_t out_len) {
+  if (!file) {
+    return false;
+  }
+
+  size_t pos = 0;
+  bool saw_any = false;
+  while (file.available()) {
+    int c = file.read();
+    if (c < 0) {
+      break;
+    }
+    saw_any = true;
+    if (c == '\r') {
+      continue;
+    }
+    if (c == '\n') {
+      break;
+    }
+    if (pos + 1 < out_len) {
+      out[pos++] = static_cast<char>(c);
+    }
+  }
+
+  if (!saw_any && pos == 0) {
+    return false;
+  }
+
+  out[pos] = 0;
+  return true;
+}
+
+static bool trimSensorLogToLimit(const char* log_path, const char* temp_path) {
+  File source = SD.open(log_path, FILE_READ);
+  if (!source) {
+    return false;
+  }
+
+  SD.remove(temp_path);
+  File temp = SD.open(temp_path, FILE_WRITE);
+  if (!temp) {
+    source.close();
+    return false;
+  }
+
+  char line[256];
+  if (readCsvLine(source, line, sizeof(line))) {
+    temp.println(line);
+    bool skipped_oldest_entry = false;
+    while (readCsvLine(source, line, sizeof(line))) {
+      if (!skipped_oldest_entry) {
+        skipped_oldest_entry = true;
+        continue;
+      }
+      temp.println(line);
+    }
+  }
+
+  temp.flush();
+  temp.close();
+  source.close();
+
+  SD.remove(log_path);
+  return SD.rename(temp_path, log_path);
+}
+
+static bool ensureSensorLogHeader(const char* log_path, const char* temp_path, const char* header) {
+  File source = SD.open(log_path, FILE_READ);
+  if (!source) {
+    return false;
+  }
+
+  char first_line[256] = "";
+  const bool has_first_line = readCsvLine(source, first_line, sizeof(first_line));
+  if (has_first_line && strcmp(first_line, header) == 0) {
+    source.close();
+    return true;
+  }
+
+  SD.remove(temp_path);
+  File temp = SD.open(temp_path, FILE_WRITE);
+  if (!temp) {
+    source.close();
+    return false;
+  }
+
+  temp.println(header);
+  if (has_first_line && first_line[0] != 0) {
+    temp.println(first_line);
+  }
+
+  char line[256];
+  while (readCsvLine(source, line, sizeof(line))) {
+    temp.println(line);
+  }
+
+  temp.flush();
+  temp.close();
+  source.close();
+
+  SD.remove(log_path);
+  return SD.rename(temp_path, log_path);
+}
+
+static void formatSensorLogTimestamp(char* out, size_t out_len, uint32_t epoch) {
+  DateTime dt(epoch);
+  snprintf(out,
+           out_len,
+           "%02u-%02u-%04u %02u:%02u:%02u",
+           static_cast<unsigned>(dt.month()),
+           static_cast<unsigned>(dt.day()),
+           static_cast<unsigned>(dt.year()),
+           static_cast<unsigned>(dt.hour()),
+           static_cast<unsigned>(dt.minute()),
+           static_cast<unsigned>(dt.second()));
+}
+
+static bool appendSensorLogRow(SensorManager* sensors) {
+  constexpr uint64_t kMaxSensorLogBytes = (4ULL * 1024ULL * 1024ULL * 1024ULL) - 1ULL;
+  constexpr uint32_t kSensorLogIntervalMs = 15UL * 60UL * 1000UL;
+  constexpr char kLogPath[] = "/meshcore/sensorlog.csv";
+  constexpr char kTempPath[] = "/meshcore/sensorlog.tmp";
+  constexpr char kCsvHeader[] = "timestamp,temp_c,humidity_rh,pressure_hpa,eco2_ppm,tvoc_ppb";
+
+  static unsigned long next_log_ms = 0;
+  static bool header_verified = false;
+  const unsigned long now_ms = millis();
+  if (next_log_ms != 0 && (int32_t)(now_ms - next_log_ms) < 0) {
+    return false;
+  }
+
+  if (sensors == NULL || SD.cardType() == CARD_NONE) {
+    next_log_ms = now_ms + kSensorLogIntervalMs;
+    return false;
+  }
+
+  CayenneLPP telemetry(96);
+  telemetry.reset();
+  sensors->querySensors(TELEM_PERM_ENVIRONMENT, telemetry);
+
+  EnvTelemetrySnapshot snap{};
+  sensors->getTelemetrySnapshot(snap);
+  if (!snap.has_temperature && !snap.has_humidity && !snap.has_pressure && !snap.has_eco2 && !snap.has_tvoc) {
+    next_log_ms = now_ms + kSensorLogIntervalMs;
+    return false;
+  }
+
+  File log_file = SD.open(kLogPath, FILE_APPEND);
+  if (!log_file) {
+    log_file = SD.open(kLogPath, FILE_WRITE);
+  }
+  if (!log_file) {
+    next_log_ms = now_ms + kSensorLogIntervalMs;
+    return false;
+  }
+
+  if ((uint64_t)log_file.size() >= kMaxSensorLogBytes) {
+    log_file.close();
+    if (!trimSensorLogToLimit(kLogPath, kTempPath)) {
+      next_log_ms = now_ms + kSensorLogIntervalMs;
+      return false;
+    }
+    log_file = SD.open(kLogPath, FILE_APPEND);
+    if (!log_file) {
+      next_log_ms = now_ms + kSensorLogIntervalMs;
+      return false;
+    }
+  }
+
+  if (!header_verified && log_file.size() > 0) {
+    log_file.close();
+    if (!ensureSensorLogHeader(kLogPath, kTempPath, kCsvHeader)) {
+      next_log_ms = now_ms + kSensorLogIntervalMs;
+      return false;
+    }
+    log_file = SD.open(kLogPath, FILE_APPEND);
+    if (!log_file) {
+      next_log_ms = now_ms + kSensorLogIntervalMs;
+      return false;
+    }
+    header_verified = true;
+  }
+
+  if (log_file.size() == 0) {
+    log_file.println(kCsvHeader);
+    header_verified = true;
+  }
+
+  char buf[32];
+  char timestamp[24];
+  const uint32_t epoch = rtc_clock.getCurrentTime();
+  formatSensorLogTimestamp(timestamp, sizeof(timestamp), epoch);
+  log_file.print(timestamp);
+  log_file.print(',');
+  if (snap.has_temperature) {
+    snprintf(buf, sizeof(buf), "%.2f", snap.temperature_c);
+    log_file.print(buf);
+  }
+  log_file.print(',');
+  if (snap.has_humidity) {
+    snprintf(buf, sizeof(buf), "%.2f", snap.humidity_rh);
+    log_file.print(buf);
+  }
+  log_file.print(',');
+  if (snap.has_pressure) {
+    snprintf(buf, sizeof(buf), "%.2f", snap.pressure_hpa);
+    log_file.print(buf);
+  }
+  log_file.print(',');
+  if (snap.has_eco2) {
+    snprintf(buf, sizeof(buf), "%.0f", snap.eco2_ppm);
+    log_file.print(buf);
+  }
+  log_file.print(',');
+  if (snap.has_tvoc) {
+    snprintf(buf, sizeof(buf), "%.0f", snap.tvoc_ppb);
+    log_file.print(buf);
+  }
+  log_file.println();
+  log_file.flush();
+  log_file.close();
+
+  next_log_ms = now_ms + kSensorLogIntervalMs;
+  CORE2_TOUCH_TRACE("sensorlog appended epoch=%lu", static_cast<unsigned long>(epoch));
+  return true;
+}
+#endif
 
 static void drawCore2NerdText(int x, int y, const char* text, uint16_t color) {
   proto_nerd_font::drawTextTransparent(M5.Lcd, x, y, text, color, 1);
@@ -997,9 +1301,22 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
   home = new HomeScreen(this, &rtc_clock, sensors, node_prefs);
   msg_preview = new MsgPreviewScreen(this, &rtc_clock);
   setCurrScreen(splash);
+
+#if defined(ARDUINO_M5STACK_CORE2) && CORE2_ENV_DASHBOARD
+  resetCore2DashboardState();
+#endif
 }
 
-#if defined(ARDUINO_M5STACK_CORE2)
+#if defined(ARDUINO_M5STACK_CORE2) && CORE2_ENV_DASHBOARD
+void UITask::resetCore2DashboardState() {
+  _core2_dashboard_layout_drawn = false;
+  _dash_prev_temp[0] = 0;
+  _dash_prev_humi[0] = 0;
+  _dash_prev_press[0] = 0;
+  _dash_prev_eco2[0] = 0;
+  _dash_prev_tvoc[0] = 0;
+}
+
 char UITask::handleCore2TouchToggle() {
   M5.update();
   char action = 0;
@@ -1016,21 +1333,32 @@ char UITask::handleCore2TouchToggle() {
       _display->turnOn();
       _auto_off = now + AUTO_OFF_MILLIS;
       _next_refresh = 0;
-      CORE2_TOUCH_TRACE("wake-on-touch");
+      CORE2_TOUCH_TRACE("wake-on-touch mode=%d", _core2_dashboard_mode ? 1 : 0);
     }
     _core2_touch_press_started_at = now;
     _core2_touch_longpress_fired = false;
     _core2_touch_start_x = _core2_touch_last_x;
     _core2_touch_start_y = _core2_touch_last_y;
-    CORE2_TOUCH_TRACE("down x=%d y=%d points=%d display_on=%d", _core2_touch_start_x, _core2_touch_start_y, M5.Touch.points, (_display != NULL && _display->isOn()) ? 1 : 0);
+    CORE2_TOUCH_TRACE("down x=%d y=%d points=%d display_on=%d mode=%d", _core2_touch_start_x, _core2_touch_start_y, M5.Touch.points, (_display != NULL && _display->isOn()) ? 1 : 0, _core2_dashboard_mode ? 1 : 0);
   }
 
   if (pressed && !_core2_touch_longpress_fired && now >= _core2_touch_debounce_until) {
     if ((uint32_t)(now - _core2_touch_press_started_at) >= CORE2_MODE_SWITCH_LONG_PRESS_MILLIS) {
       _core2_touch_longpress_fired = true;
       _core2_touch_debounce_until = now + 250;
-      action = KEY_ENTER;
-      CORE2_TOUCH_TRACE("long-press panel-action");
+      const bool can_switch_to_dashboard = (!_core2_dashboard_mode && curr == home && ((HomeScreen*)home)->isFirstPanel());
+
+      if (_core2_dashboard_mode || can_switch_to_dashboard) {
+        _core2_dashboard_mode = !_core2_dashboard_mode;
+        if (_core2_dashboard_mode) {
+          resetCore2DashboardState();
+        }
+        CORE2_TOUCH_TRACE("long-press toggle -> mode=%d", _core2_dashboard_mode ? 1 : 0);
+      } else {
+        // Preserve existing panel long-press behavior in MeshCore UI panels.
+        action = KEY_ENTER;
+        CORE2_TOUCH_TRACE("long-press passthrough panel-action");
+      }
 
       _next_refresh = 0;
       _auto_off = millis() + AUTO_OFF_MILLIS;
@@ -1038,7 +1366,7 @@ char UITask::handleCore2TouchToggle() {
   }
 
   if (!pressed && _core2_touch_was_pressed) {
-    if (!_core2_touch_longpress_fired && curr == home) {
+    if (!_core2_touch_longpress_fired && !_core2_dashboard_mode && curr == home) {
       const int dx = _core2_touch_last_x - _core2_touch_start_x;
       const int dy = _core2_touch_last_y - _core2_touch_start_y;
       if (abs(dx) >= CORE2_SWIPE_MIN_DX && abs(dy) <= CORE2_SWIPE_MAX_DY) {
@@ -1049,12 +1377,116 @@ char UITask::handleCore2TouchToggle() {
         CORE2_TOUCH_TRACE("release dx=%d dy=%d no-swipe", dx, dy);
       }
     } else {
-      CORE2_TOUCH_TRACE("release longpress=%d", _core2_touch_longpress_fired ? 1 : 0);
+      CORE2_TOUCH_TRACE("release longpress=%d mode=%d", _core2_touch_longpress_fired ? 1 : 0, _core2_dashboard_mode ? 1 : 0);
     }
   }
 
   _core2_touch_was_pressed = pressed;
   return action;
+}
+
+bool UITask::renderCore2Dashboard() {
+  if (_display == NULL || !_display->isOn() || _sensors == NULL) {
+    return false;
+  }
+
+  // Keep snapshot-backed dashboard values fresh, but rate-limit the actual
+  // I2C sensor reads to once every 5 seconds. Calling querySensors every
+  // 750ms (render cycle) tears down and reinits Wire1 continuously which
+  // degrades I2C reliability for the FT6336 touch controller over time.
+  static CayenneLPP dashboard_probe_lpp(96);
+  static unsigned long dashboard_probe_next_ms = 0;
+  const unsigned long now_ms = millis();
+  if ((uint32_t)(now_ms - dashboard_probe_next_ms) >= 5000UL || dashboard_probe_next_ms == 0) {
+    CORE2_TOUCH_TRACE("dashboard sensor probe");
+    dashboard_probe_lpp.reset();
+    _sensors->querySensors(TELEM_PERM_ENVIRONMENT, dashboard_probe_lpp);
+    dashboard_probe_next_ms = now_ms + 5000;
+  }
+
+  EnvTelemetrySnapshot snap{};
+  _sensors->getTelemetrySnapshot(snap);
+
+  char v_temp[20], v_humi[20], v_press[20], v_eco2[20], v_tvoc[20];
+  const float temp_f = snap.has_temperature ? (snap.temperature_c * 9.0f / 5.0f + 32.0f) : 0.0f;
+  formatDashboardValue(v_temp, sizeof(v_temp), snap.has_temperature, temp_f, "F");
+  formatDashboardValue(v_humi, sizeof(v_humi), snap.has_humidity, snap.humidity_rh, "%");
+  formatDashboardValue(v_press, sizeof(v_press), snap.has_pressure, snap.pressure_hpa, "mbar");
+  formatDashboardValue(v_eco2, sizeof(v_eco2), snap.has_eco2, snap.eco2_ppm, "ppm");
+  formatDashboardValue(v_tvoc, sizeof(v_tvoc), snap.has_tvoc, snap.tvoc_ppb, "ppb");
+
+  auto drawCardFrame = [](int x, int y, int w, int h, uint16_t card, uint16_t border, const char* label) {
+    M5.Lcd.fillRoundRect(x, y, w, h, 8, card);
+    M5.Lcd.drawRoundRect(x, y, w, h, 8, border);
+    // Clear only the inner label strip so the top border remains intact.
+    M5.Lcd.fillRect(x + 6, y + 2, w - 12, 16, card);
+    proto_nerd_font::drawTextTransparent(M5.Lcd, x + 8, y, label, TFT_BLACK, 1);
+  };
+
+  constexpr uint16_t kBg = 0xC618;
+  constexpr uint16_t kHeader = 0x8410;
+  constexpr uint16_t kCard = TFT_WHITE;
+  constexpr uint16_t kBorder = 0x4208;
+
+  const int margin = 8;
+  const int gap = 8;
+  const int cols = 2;
+  const int rows = 3;
+  const int header_h = 26;
+  const int tile_w = (M5.Lcd.width() - (margin * 2) - gap) / cols;
+  const int tile_h = (M5.Lcd.height() - header_h - (margin * 2) - (gap * (rows - 1))) / rows;
+  const int bottom_tile_x = (M5.Lcd.width() - tile_w) / 2;
+
+  const int row0 = header_h + gap;
+  const int row1 = row0 + tile_h + gap;
+  const int row2 = row1 + tile_h + gap;
+  const int col0 = margin;
+  const int col1 = margin + tile_w + gap;
+
+  M5.Lcd.startWrite();
+  if (!_core2_dashboard_layout_drawn) {
+    M5.Lcd.fillScreen(kBg);
+    M5.Lcd.fillRect(0, 0, M5.Lcd.width(), header_h, kHeader);
+    M5.Lcd.drawFastHLine(0, header_h, M5.Lcd.width(), kBorder);
+    const char* title = "MESHCORE SENSOR DASH";
+    const int title_w = proto_nerd_font::textWidth(title, 1);
+    proto_nerd_font::drawText(M5.Lcd, (M5.Lcd.width() - title_w) / 2, 4, title, TFT_WHITE, kHeader, 1);
+
+    drawCardFrame(col0, row0, tile_w, tile_h, kCard, kBorder, "TEMP");
+    drawCardFrame(col1, row0, tile_w, tile_h, kCard, kBorder, "HUM");
+    drawCardFrame(col0, row1, tile_w, tile_h, kCard, kBorder, "PRES");
+    drawCardFrame(col1, row1, tile_w, tile_h, kCard, kBorder, "eCO2");
+    drawCardFrame(bottom_tile_x, row2, tile_w, tile_h, kCard, kBorder, "TVOC");
+    _core2_dashboard_layout_drawn = true;
+  }
+
+  if (strcmp(_dash_prev_temp, v_temp) != 0) {
+    drawDashboardCardValue(M5.Lcd, col0, row0, tile_w, tile_h, kCard, v_temp);
+    strncpy(_dash_prev_temp, v_temp, sizeof(_dash_prev_temp) - 1);
+    _dash_prev_temp[sizeof(_dash_prev_temp) - 1] = 0;
+  }
+  if (strcmp(_dash_prev_humi, v_humi) != 0) {
+    drawDashboardCardValue(M5.Lcd, col1, row0, tile_w, tile_h, kCard, v_humi);
+    strncpy(_dash_prev_humi, v_humi, sizeof(_dash_prev_humi) - 1);
+    _dash_prev_humi[sizeof(_dash_prev_humi) - 1] = 0;
+  }
+  if (strcmp(_dash_prev_press, v_press) != 0) {
+    drawDashboardCardValue(M5.Lcd, col0, row1, tile_w, tile_h, kCard, v_press);
+    strncpy(_dash_prev_press, v_press, sizeof(_dash_prev_press) - 1);
+    _dash_prev_press[sizeof(_dash_prev_press) - 1] = 0;
+  }
+  if (strcmp(_dash_prev_eco2, v_eco2) != 0) {
+    drawDashboardCardValue(M5.Lcd, col1, row1, tile_w, tile_h, kCard, v_eco2);
+    strncpy(_dash_prev_eco2, v_eco2, sizeof(_dash_prev_eco2) - 1);
+    _dash_prev_eco2[sizeof(_dash_prev_eco2) - 1] = 0;
+  }
+  if (strcmp(_dash_prev_tvoc, v_tvoc) != 0) {
+    drawDashboardCardValue(M5.Lcd, bottom_tile_x, row2, tile_w, tile_h, kCard, v_tvoc);
+    strncpy(_dash_prev_tvoc, v_tvoc, sizeof(_dash_prev_tvoc) - 1);
+    _dash_prev_tvoc[sizeof(_dash_prev_tvoc) - 1] = 0;
+  }
+  M5.Lcd.endWrite();
+  return true;
 }
 #endif
 
@@ -1180,7 +1612,7 @@ bool UITask::isButtonPressed() const {
 
 void UITask::loop() {
   char c = 0;
-#if defined(ARDUINO_M5STACK_CORE2)
+#if defined(ARDUINO_M5STACK_CORE2) && CORE2_ENV_DASHBOARD
   c = handleCore2TouchToggle();
 #endif
 #if UI_HAS_JOYSTICK
@@ -1259,8 +1691,18 @@ void UITask::loop() {
 
   if (curr) curr->poll();
 
+#if defined(ARDUINO_M5STACK_CORE2) && CORE2_ENV_DASHBOARD
+  appendSensorLogRow(_sensors);
+#endif
+
   if (_display != NULL && _display->isOn()) {
     if (millis() >= _next_refresh) {
+#if defined(ARDUINO_M5STACK_CORE2) && CORE2_ENV_DASHBOARD
+      if (_core2_dashboard_mode) {
+        renderCore2Dashboard();
+        _next_refresh = millis() + 750;
+      } else
+#endif
       if (curr) {
         _display->startFrame();
         int delay_millis = curr->render(*_display);

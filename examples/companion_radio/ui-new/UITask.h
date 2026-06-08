@@ -22,6 +22,10 @@
 #include "../AbstractUITask.h"
 #include "../NodePrefs.h"
 
+#ifndef CORE2_ENV_DASHBOARD
+  #define CORE2_ENV_DASHBOARD 0
+#endif
+
 class UITask : public AbstractUITask {
   DisplayDriver* _display;
   SensorManager* _sensors;
@@ -38,7 +42,8 @@ class UITask : public AbstractUITask {
   int _msgcount;
   unsigned long ui_started_at, next_batt_chck;
   int next_backlight_btn_check = 0;
-#if defined(ARDUINO_M5STACK_CORE2)
+#if defined(ARDUINO_M5STACK_CORE2) && CORE2_ENV_DASHBOARD
+  bool _core2_dashboard_mode = true;
   bool _core2_touch_was_pressed = false;
   bool _core2_touch_longpress_fired = false;
   unsigned long _core2_touch_press_started_at = 0;
@@ -47,6 +52,12 @@ class UITask : public AbstractUITask {
   int16_t _core2_touch_start_y = 0;
   int16_t _core2_touch_last_x = 0;
   int16_t _core2_touch_last_y = 0;
+  bool _core2_dashboard_layout_drawn = false;
+  char _dash_prev_temp[20] = "";
+  char _dash_prev_humi[20] = "";
+  char _dash_prev_press[20] = "";
+  char _dash_prev_eco2[20] = "";
+  char _dash_prev_tvoc[20] = "";
 #endif
 #ifdef PIN_STATUS_LED
   int led_state = 0;
@@ -73,8 +84,10 @@ class UITask : public AbstractUITask {
 
   void setCurrScreen(UIScreen* c);
 
-#if defined(ARDUINO_M5STACK_CORE2)
+#if defined(ARDUINO_M5STACK_CORE2) && CORE2_ENV_DASHBOARD
   char handleCore2TouchToggle();
+  bool renderCore2Dashboard();
+  void resetCore2DashboardState();
 #endif
 
 public:

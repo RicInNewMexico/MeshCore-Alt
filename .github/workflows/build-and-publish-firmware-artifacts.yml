@@ -3,6 +3,9 @@
 permissions:
   contents: read
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 on:
   workflow_dispatch:
   pull_request:
@@ -282,7 +285,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Download All Build Artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           pattern: fw-*
@@ -293,7 +296,7 @@ jobs:
         id: successful_builds
         shell: bash
         run: |
-          if [ -d collected ] && find collected -mindepth 1 -maxdepth 1 -type d | grep -q .; then
+          if [ -d collected ] && find collected -mindepth 1 -maxdepth 1 -type d -print -quit | grep -q .; then
             echo "has_artifacts=true" >> "$GITHUB_OUTPUT"
           else
             echo "No successful build artifacts were produced in this run."

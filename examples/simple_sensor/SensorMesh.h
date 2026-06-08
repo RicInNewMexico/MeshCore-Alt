@@ -90,6 +90,8 @@ protected:
   float getRelativeHumidity(uint8_t channel) { return getTelemValue(channel, LPP_RELATIVE_HUMIDITY); }
   float getBarometricPressure(uint8_t channel) { return getTelemValue(channel, LPP_BAROMETRIC_PRESSURE); }
   float getAltitude(uint8_t channel) { return getTelemValue(channel, LPP_ALTITUDE); }
+  float getConcentration(uint8_t channel) { return getTelemValue(channel, LPP_CONCENTRATION); }
+  float getGenericValue(uint8_t channel) { return getTelemValue(channel, LPP_GENERIC_SENSOR); }
   bool  getGPS(uint8_t channel, float& lat, float& lon, float& alt);
 
   // alerts

@@ -90,13 +90,19 @@ static uint8_t getDataSize(uint8_t type) {
         return 4;
       case LPP_COLOUR:
         return 3;
+      case LPP_DIGITAL_INPUT:
+      case LPP_DIGITAL_OUTPUT:
+      case LPP_PRESENCE:
+      case LPP_PERCENTAGE:
+      case LPP_SWITCH:
+      case LPP_RELATIVE_HUMIDITY:
+        return 1;
       case LPP_ANALOG_INPUT:
       case LPP_ANALOG_OUTPUT:
       case LPP_LUMINOSITY:
       case LPP_TEMPERATURE:
       case LPP_CONCENTRATION:
       case LPP_BAROMETRIC_PRESSURE:
-      case LPP_RELATIVE_HUMIDITY:
       case LPP_ALTITUDE:
       case LPP_VOLTAGE:
       case LPP_CURRENT:
@@ -119,8 +125,9 @@ static uint32_t getMultiplier(uint8_t type) {
         return 100;
       case LPP_TEMPERATURE:
       case LPP_BAROMETRIC_PRESSURE:
-      case LPP_RELATIVE_HUMIDITY:
         return 10;
+      case LPP_RELATIVE_HUMIDITY:
+        return 2;
     }
     return 1;
 }

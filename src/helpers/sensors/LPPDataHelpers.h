@@ -136,6 +136,18 @@ public:
     m = getFloat(&_buf[_pos], 2, 1, true); _pos += 2;
     return _pos <= _len;
   }
+  bool readGenericSensor(float& value) {
+    value = getFloat(&_buf[_pos], 4, 1, false); _pos += 4;
+    return _pos <= _len;
+  }
+  bool readConcentration(float& ppm) {
+    ppm = getFloat(&_buf[_pos], 2, 1, false); _pos += 2;
+    return _pos <= _len;
+  }
+  bool readPresence(float& present) {
+    present = getFloat(&_buf[_pos], 1, 1, false); _pos += 1;
+    return _pos <= _len;
+  }
 
   void skipData(uint8_t type) {
     switch (type) {
@@ -154,6 +166,13 @@ public:
         _pos += 4; break;
       case LPP_COLOUR:
         _pos += 3; break;
+      case LPP_DIGITAL_INPUT:
+      case LPP_DIGITAL_OUTPUT:
+      case LPP_PRESENCE:
+      case LPP_PERCENTAGE:
+      case LPP_SWITCH:
+      case LPP_RELATIVE_HUMIDITY:
+        _pos += 1; break;
       case LPP_ANALOG_INPUT:
       case LPP_ANALOG_OUTPUT:
       case LPP_LUMINOSITY:

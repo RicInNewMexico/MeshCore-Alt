@@ -52,12 +52,20 @@ static Adafruit_BME680 BME680(TELEM_WIRE);
 static Adafruit_BMP085 BMP085;
 #endif
 
-#if ENV_INCLUDE_AHTX0
+#if ENV_INCLUDE_AHTX0 || ENV_INCLUDE_AHT212 || ENV_INCLUDE_AHT30
 #ifndef TELEM_AHTX_ADDRESS
 #define TELEM_AHTX_ADDRESS      0x38      // AHT10, AHT20 temperature and humidity sensor I2C address
 #endif
 #include <Adafruit_AHTX0.h>
 static Adafruit_AHTX0 AHTX0;
+#endif
+
+#if ENV_INCLUDE_ENS160
+#ifndef TELEM_ENS160_ADDRESS
+#define TELEM_ENS160_ADDRESS 0x53
+#endif
+#include <ScioSense_ENS160.h>
+static ScioSense_ENS160 ENS160(TELEM_WIRE, TELEM_ENS160_ADDRESS);
 #endif
 
 #if ENV_INCLUDE_BME280
@@ -91,6 +99,14 @@ static Adafruit_SHTC3 SHTC3;
 static SensirionI2cSht4x SHT4X;
 #endif
 
+#if ENV_INCLUDE_SHT30
+#ifndef TELEM_SHT30_ADDRESS
+#define TELEM_SHT30_ADDRESS 0x44
+#endif
+#include <Adafruit_SHT31.h>
+static Adafruit_SHT31 SHT30(TELEM_WIRE);
+#endif
+
 #if ENV_INCLUDE_SGP30
 #ifndef TELEM_SGP30_ADDRESS
 #define TELEM_SGP30_ADDRESS 0x58
@@ -100,6 +116,14 @@ static SensirionI2cSht4x SHT4X;
 #endif
 #include <Adafruit_SGP30.h>
 static Adafruit_SGP30 SGP30;
+#endif
+
+#if ENV_INCLUDE_SCD40
+#ifndef TELEM_SCD40_ADDRESS
+#define TELEM_SCD40_ADDRESS 0x62
+#endif
+#include <SensirionI2cScd4x.h>
+static SensirionI2cScd4x SCD40;
 #endif
 
 #if ENV_INCLUDE_LPS22HB
@@ -169,6 +193,25 @@ static Adafruit_VL53L0X VL53L0X;
 #endif
 #include "RAK12035_SoilMoisture.h"
 static RAK12035_SoilMoisture RAK12035;
+#endif
+
+#if ENV_INCLUDE_MICS6814
+#ifndef TELEM_MICS6814_ADDRESS
+#define TELEM_MICS6814_ADDRESS 0x04
+#endif
+#include <MiCS6814-I2C.h>
+static MiCS6814 MICS6814;
+#endif
+
+#if ENV_INCLUDE_QMP6988
+#ifndef TELEM_QMP6988_ADDRESS
+#define TELEM_QMP6988_ADDRESS 0x70
+#endif
+#ifndef TELEM_QMP6988_FREQ
+#define TELEM_QMP6988_FREQ 400000U
+#endif
+#include <QMP6988.h>
+static QMP6988 QMP6988;
 #endif
 
 #if ENV_INCLUDE_GPS && defined(RAK_BOARD) && !defined(RAK_WISMESH_TAG)
@@ -250,7 +293,7 @@ static void scanI2CBus(TwoWire* wire, bool found[128]) {
 //   0 for single-output sensors.
 // ============================================================
 
-#if ENV_INCLUDE_AHTX0
+#if ENV_INCLUDE_AHTX0 || ENV_INCLUDE_AHT212 || ENV_INCLUDE_AHT30
 static uint8_t init_ahtx0(TwoWire* wire, uint8_t addr) {
   return AHTX0.begin(wire, 0, addr) ? 1 : 0;
 }
@@ -259,6 +302,32 @@ static void query_ahtx0(uint8_t ch, uint8_t, CayenneLPP& lpp) {
   AHTX0.getEvent(&humidity, &temp);
   lpp.addTemperature(ch, temp.temperature);
   lpp.addRelativeHumidity(ch, humidity.relative_humidity);
+}
+#endif
+
+#if ENV_INCLUDE_ENS160
+static uint8_t init_ens160(TwoWire* wire, uint8_t addr) {
+  (void)wire;
+  (void)addr;
+  if (!ENS160.begin()) {
+    return 0;
+  }
+  ENS160.setMode(ENS160_OPMODE_STD);
+  return 3;
+}
+static void query_ens160(uint8_t ch, uint8_t sub_ch, CayenneLPP& lpp) {
+  if (!ENS160.available()) {
+    return;
+  }
+
+  ENS160.measure(true);
+  if (sub_ch == 0) {
+    lpp.addConcentration(ch, ENS160.geteCO2());
+  } else if (sub_ch == 1) {
+    lpp.addConcentration(ch, ENS160.getTVOC());
+  } else {
+    lpp.addGenericSensor(ch, ENS160.getAQI());
+  }
 }
 #endif
 
@@ -342,6 +411,20 @@ static void query_sht4x(uint8_t ch, uint8_t, CayenneLPP& lpp) {
 }
 #endif
 
+#if ENV_INCLUDE_SHT30
+static uint8_t init_sht30(TwoWire*, uint8_t addr) {
+  return SHT30.begin(addr) ? 1 : 0;
+}
+static void query_sht30(uint8_t ch, uint8_t, CayenneLPP& lpp) {
+  float t = SHT30.readTemperature();
+  float h = SHT30.readHumidity();
+  if (!isnan(t) && !isnan(h)) {
+    lpp.addTemperature(ch, t);
+    lpp.addRelativeHumidity(ch, h);
+  }
+}
+#endif
+
 #if ENV_INCLUDE_SGP30
 static bool sgp30_sample_ready = false;
 static bool sgp30_initialized = false;
@@ -384,9 +467,48 @@ static void query_sgp30(uint8_t ch, uint8_t sub_ch, CayenneLPP& lpp) {
   }
 
   if (sub_ch == 0) {
-    lpp.addGenericSensor(ch, sgp30_last_eco2);
+    lpp.addConcentration(ch, sgp30_last_eco2);
   } else {
-    lpp.addGenericSensor(ch, sgp30_last_tvoc);
+    lpp.addConcentration(ch, sgp30_last_tvoc);
+  }
+}
+#endif
+
+#if ENV_INCLUDE_SCD40
+static uint8_t init_scd40(TwoWire* wire, uint8_t addr) {
+  SCD40.begin(*wire, addr);
+
+  uint64_t serial = 0;
+  if (SCD40.getSerialNumber(serial) != 0) {
+    return 0;
+  }
+
+  // Ensure clean measurement state before switching to periodic mode.
+  SCD40.wakeUp();
+  SCD40.stopPeriodicMeasurement();
+  SCD40.reinit();
+
+  return (SCD40.startPeriodicMeasurement() == 0) ? 3 : 0;
+}
+static void query_scd40(uint8_t ch, uint8_t sub_ch, CayenneLPP& lpp) {
+  bool ready = false;
+  if (SCD40.getDataReadyStatus(ready) != 0 || !ready) {
+    return;
+  }
+
+  uint16_t co2 = 0;
+  float temperature = 0;
+  float humidity = 0;
+  if (SCD40.readMeasurement(co2, temperature, humidity) != 0) {
+    return;
+  }
+
+  if (sub_ch == 0) {
+    lpp.addConcentration(ch, co2);
+  } else if (sub_ch == 1) {
+    lpp.addTemperature(ch, temperature);
+  } else {
+    lpp.addRelativeHumidity(ch, humidity);
   }
 }
 #endif
@@ -535,6 +657,52 @@ static void query_rak12035(uint8_t ch, uint8_t sub_ch, CayenneLPP& lpp) {
 }
 #endif
 
+#if ENV_INCLUDE_MICS6814
+static uint8_t init_mics6814(TwoWire* wire, uint8_t addr) {
+  // MiCS6814-I2C currently uses the global Wire object internally.
+  if (wire != &Wire) {
+    return 0;
+  }
+  if (!MICS6814.begin(addr)) {
+    return 0;
+  }
+  MICS6814.powerOn();
+  return 8;
+}
+static void query_mics6814(uint8_t ch, uint8_t sub_ch, CayenneLPP& lpp) {
+  float ppm = NAN;
+  switch (sub_ch) {
+    case 0: ppm = MICS6814.measureCO(); break;
+    case 1: ppm = MICS6814.measureNO2(); break;
+    case 2: ppm = MICS6814.measureC2H5OH(); break;
+    case 3: ppm = MICS6814.measureH2(); break;
+    case 4: ppm = MICS6814.measureNH3(); break;
+    case 5: ppm = MICS6814.measureCH4(); break;
+    case 6: ppm = MICS6814.measureC3H8(); break;
+    case 7: ppm = MICS6814.measureC4H10(); break;
+    default: break;
+  }
+
+  if (!isnan(ppm) && ppm > 0.0f) {
+    lpp.addConcentration(ch, (uint16_t)ppm);
+  }
+}
+#endif
+
+#if ENV_INCLUDE_QMP6988
+static uint8_t init_qmp6988(TwoWire* wire, uint8_t addr) {
+  return QMP6988.begin(wire, addr, -1, -1, TELEM_QMP6988_FREQ) ? 1 : 0;
+}
+static void query_qmp6988(uint8_t ch, uint8_t, CayenneLPP& lpp) {
+  if (!QMP6988.update()) {
+    return;
+  }
+  lpp.addTemperature(ch, QMP6988.cTemp);
+  lpp.addBarometricPressure(ch, QMP6988.pressure / 100.0f);
+  lpp.addAltitude(ch, QMP6988.altitude);
+}
+#endif
+
 #if ENV_INCLUDE_BME680_BSEC
 static void bsec_load_state() {
   using namespace Adafruit_LittleFS_Namespace;
@@ -614,6 +782,13 @@ struct SensorDef {
 static const SensorDef SENSOR_TABLE[] = {
 #if ENV_INCLUDE_AHTX0
   { TELEM_AHTX_ADDRESS,    "AHT10/AHT20", init_ahtx0,    query_ahtx0    },
+#elif ENV_INCLUDE_AHT212
+  { TELEM_AHTX_ADDRESS,    "AHT212",      init_ahtx0,    query_ahtx0    },
+#elif ENV_INCLUDE_AHT30
+  { TELEM_AHTX_ADDRESS,    "AHT30",       init_ahtx0,    query_ahtx0    },
+#endif
+#if ENV_INCLUDE_ENS160
+  { TELEM_ENS160_ADDRESS,  "ENS160",      init_ens160,   query_ens160   },
 #endif
 #ifdef ENV_INCLUDE_BME680
   { TELEM_BME680_ADDRESS,  "BME680",       init_bme680,   query_bme680   },
@@ -633,8 +808,14 @@ static const SensorDef SENSOR_TABLE[] = {
 #if ENV_INCLUDE_SHT4X
   { TELEM_SHT4X_ADDRESS,   "SHT4X",        init_sht4x,    query_sht4x    },
 #endif
+#if ENV_INCLUDE_SHT30
+  { TELEM_SHT30_ADDRESS,   "SHT30",        init_sht30,    query_sht30    },
+#endif
 #if ENV_INCLUDE_SGP30
   { TELEM_SGP30_ADDRESS,   "SGP30",        init_sgp30,    query_sgp30    },
+#endif
+#if ENV_INCLUDE_SCD40
+  { TELEM_SCD40_ADDRESS,   "SCD40",        init_scd40,    query_scd40    },
 #endif
 #if ENV_INCLUDE_LPS22HB
   { 0x5C,                  "LPS22HB",      init_lps22hb,  query_lps22hb  },
@@ -662,6 +843,12 @@ static const SensorDef SENSOR_TABLE[] = {
 #endif
 #if ENV_INCLUDE_RAK12035
   { TELEM_RAK12035_ADDRESS,"RAK12035",     init_rak12035, query_rak12035 },
+#endif
+#if ENV_INCLUDE_MICS6814
+  { TELEM_MICS6814_ADDRESS,"MICS6814",     init_mics6814, query_mics6814 },
+#endif
+#if ENV_INCLUDE_QMP6988
+  { TELEM_QMP6988_ADDRESS, "QMP6988",      init_qmp6988,  query_qmp6988  },
 #endif
   { 0, nullptr, nullptr, nullptr }  // sentinel — keeps the array non-empty
 };

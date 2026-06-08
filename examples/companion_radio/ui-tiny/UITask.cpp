@@ -345,6 +345,18 @@ public:
             r.readPower(v);
             strcpy(name, "power"); sprintf(buf, "%6.2f", v);
             break;
+          case LPP_CONCENTRATION:
+            r.readConcentration(v);
+            sprintf(name, "ch%u ppm", channel); sprintf(buf, "%.0f", v);
+            break;
+          case LPP_GENERIC_SENSOR:
+            r.readGenericSensor(v);
+            sprintf(name, "ch%u value", channel); sprintf(buf, "%.0f", v);
+            break;
+          case LPP_PRESENCE:
+            r.readPresence(v);
+            sprintf(name, "ch%u presence", channel); sprintf(buf, "%s", v > 0 ? "yes" : "no");
+            break;
           default:
             r.skipData(type);
             strcpy(name, "unk"); sprintf(buf, "");

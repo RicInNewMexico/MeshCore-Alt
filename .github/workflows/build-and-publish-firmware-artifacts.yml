@@ -1,26 +1,19 @@
-name: Build And Publish Firmware Artifacts
+﻿name: Build And Publish Firmware Artifacts
 
 permissions:
   contents: read
 
 on:
-  workflow_call:
-    inputs:
-      platform_filter:
-        description: PlatformIO platform constant to include (for example ESP32_PLATFORM)
-        required: true
-        type: string
-      workflow_label:
-        description: Human-friendly label for release titles and notes
-        required: true
-        type: string
   workflow_dispatch:
-  push:
+  pull_request:
+    types:
+      - closed
     branches:
       - main
 
 jobs:
   discover:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.discover.outputs.matrix }}
@@ -29,8 +22,23 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v6
 
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-environment
+      - name: Init Cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio/.cache
+          key: ${{ runner.os }}-pio
+
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install PlatformIO
+        shell: bash
+        run: |
+          pip install --upgrade platformio
 
       - name: Discover Build Matrix
         id: discover
@@ -46,8 +54,54 @@ jobs:
           with open('pio-config.json', 'r', encoding='utf-8') as f:
               cfg = json.load(f)
 
-          role_re = re.compile(r'_(companion_radio_(?:usb|ble)|room_server|repeater)(?:_|$)')
+          role_re = re.compile(r'_(companion_radio_(?:usb|ble)|room_server|repeater|kiss_modem)(?:_|$)')
           platform_re = re.compile(r'(ESP32_PLATFORM|NRF52_PLATFORM|STM32_PLATFORM|RP2040_PLATFORM)')
+
+          def norm(s: str) -> str:
+              return ''.join(ch for ch in s.lower() if ch.isalnum())
+
+          exact_excludes = set(map(norm, [
+              'ebyte_eora_s3',
+              'keepteen_lt1',
+              'lilygo t_impulse',
+              'meshadventurer',
+              'meshtiny',
+              'minewsemi',
+              'nibble_screen_connect',
+              'rak_wishmesh_tag',
+              'sensecap_indicator',
+              'tenstar_c3',
+              'tiny_relay',
+              'wip_wm1110',
+              'rak3x72',
+              'rak3112',
+              'rak3401',
+              'waveshare_rp2040_lora',
+              'promicro',
+              'lilygo_teth_elite',
+          ]))
+          prefix_excludes = list(map(norm, [
+              'gat562',
+              'generic',
+              'ikoka',
+              'lilygo_t3s3',
+              'station_g2',
+          ]))
+          contains_excludes = list(map(norm, [
+              'sensecap_indicator',
+              'nibble_screen_connect',
+              'rak_wishmesh_tag',
+          ]))
+
+          def is_excluded(variant: str) -> bool:
+              v = norm(variant)
+              if v in exact_excludes:
+                  return True
+              if any(v.startswith(p) for p in prefix_excludes):
+                  return True
+              if any(c in v for c in contains_excludes):
+                  return True
+              return False
 
           matrix = []
           for section, options in cfg:
@@ -64,6 +118,13 @@ jobs:
 
               role = role_match.group(1)
               variant = env_name[:role_match.start()]
+
+              # Explicitly exclude all kiss_modem role builds.
+              if role == 'kiss_modem':
+                  continue
+
+              if is_excluded(variant):
+                  continue
 
               platform = 'UNKNOWN_PLATFORM'
               build_flags = []
@@ -89,12 +150,15 @@ jobs:
 
           matrix.sort(key=lambda x: x['env_name'].lower())
 
+          if len(matrix) > 256:
+              raise RuntimeError(f'Matrix size {len(matrix)} exceeds GitHub limit 256')
+
           matrix_json = json.dumps(matrix, separators=(',', ':'))
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
               out.write(f'matrix={matrix_json}\n')
               out.write(f'count={len(matrix)}\n')
 
-          print(f'Discovered {len(matrix)} role environments')
+          print(f'Discovered {len(matrix)} role environments after exclusions')
           PY
 
   build:
@@ -109,8 +173,23 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v6
 
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-environment
+      - name: Init Cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio/.cache
+          key: ${{ runner.os }}-pio
+
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install PlatformIO
+        shell: bash
+        run: |
+          pip install --upgrade platformio
 
       - name: Build Firmware
         shell: bash
@@ -253,7 +332,6 @@ jobs:
 
               for artifact_dir, meta in entries:
                   platform = meta.get('platform', '')
-                  env_name = meta.get('env_name', artifact_dir.name)
 
                   for file_path in artifact_dir.iterdir():
                       if file_path.name == 'metadata.json':

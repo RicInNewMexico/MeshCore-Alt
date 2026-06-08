@@ -304,21 +304,12 @@ jobs:
             echo "has_artifacts=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Install zip utility
+      - name: Verify Bundled Windows Esptool Files
         if: steps.successful_builds.outputs.has_artifacts == 'true'
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y zip unzip
-
-      - name: Download Windows Esptool Binary
-        if: steps.successful_builds.outputs.has_artifacts == 'true'
-        shell: bash
-        run: |
-          mkdir -p tools/esptool-win
-          curl -L -o tools/esptool-win/esptool.zip https://github.com/espressif/esptool/releases/download/v4.8.1/esptool-v4.8.1-win64.zip
-          unzip -q tools/esptool-win/esptool.zip -d tools/esptool-win
-          rm -f tools/esptool-win/esptool.zip
+          test -d tools/esptool-win64
+          find tools/esptool-win64 -type f -name esptool.exe -print -quit | grep -q .
 
       - name: Build Variant Zip Packages
         if: steps.successful_builds.outputs.has_artifacts == 'true'
@@ -334,7 +325,7 @@ jobs:
           collected_root = Path('collected')
           package_root = Path('packages')
           staging_root = Path('staging')
-          tools_root = Path('tools/esptool-win')
+          tools_root = Path('tools/esptool-win64')
 
           package_root.mkdir(parents=True, exist_ok=True)
           staging_root.mkdir(parents=True, exist_ok=True)

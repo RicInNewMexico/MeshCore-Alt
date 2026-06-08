@@ -119,6 +119,10 @@ jobs:
               role = role_match.group(1)
               variant = env_name[:role_match.start()]
 
+                # Explicitly exclude all repeater_bridge role builds.
+                if re.search(r'(^|[_-])repeater[_-]bridge(?:[_-]|$)', env_name.lower()):
+                  continue
+
               # Explicitly exclude all kiss_modem role builds.
               if role == 'kiss_modem':
                   continue

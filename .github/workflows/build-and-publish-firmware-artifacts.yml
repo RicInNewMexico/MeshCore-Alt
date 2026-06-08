@@ -267,7 +267,7 @@ jobs:
     needs:
       - discover
       - build
-    if: needs.discover.outputs.count != '0'
+    if: ${{ always() && needs.discover.outputs.count != '0' }}
     permissions:
       contents: read
     env:
@@ -279,18 +279,32 @@ jobs:
 
       - name: Download All Build Artifacts
         uses: actions/download-artifact@v6
+        continue-on-error: true
         with:
           pattern: fw-*
           path: collected
           merge-multiple: false
 
+      - name: Check For Successful Build Artifacts
+        id: successful_builds
+        shell: bash
+        run: |
+          if [ -d collected ] && find collected -mindepth 1 -maxdepth 1 -type d | grep -q .; then
+            echo "has_artifacts=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No successful build artifacts were produced in this run."
+            echo "has_artifacts=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install zip utility
+        if: steps.successful_builds.outputs.has_artifacts == 'true'
         shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y zip unzip
 
       - name: Download Windows Esptool Binary
+        if: steps.successful_builds.outputs.has_artifacts == 'true'
         shell: bash
         run: |
           mkdir -p tools/esptool-win
@@ -299,6 +313,7 @@ jobs:
           rm -f tools/esptool-win/esptool.zip
 
       - name: Build Variant Zip Packages
+        if: steps.successful_builds.outputs.has_artifacts == 'true'
         shell: bash
         run: |
           python3 - <<'PY'
@@ -409,6 +424,7 @@ jobs:
 
       - name: Compute Release Tag
         id: release_tag
+        if: steps.successful_builds.outputs.has_artifacts == 'true'
         shell: bash
         run: |
           python3 - <<'PY'
@@ -460,6 +476,7 @@ jobs:
           PY
 
       - name: Publish Release To Artifact Repository
+        if: steps.successful_builds.outputs.has_artifacts == 'true'
         shell: bash
         run: |
           gh release create "${{ steps.release_tag.outputs.release_tag }}" packages/*.zip \
@@ -468,6 +485,7 @@ jobs:
             --notes "Automated firmware artifact bundle for ${{ github.repository }}@${{ github.sha }}"
 
       - name: Mirror Zip Packages Into Artifact Repository
+        if: steps.successful_builds.outputs.has_artifacts == 'true'
         shell: bash
         run: |
           gh repo clone "$ARTIFACT_REPO" artifact-repo -- --depth 1
@@ -489,6 +507,7 @@ jobs:
           fi
 
       - name: Upload Workflow Packages
+        if: steps.successful_builds.outputs.has_artifacts == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: firmware-variant-zips

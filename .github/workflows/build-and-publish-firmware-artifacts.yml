@@ -1,0 +1,377 @@
+name: Build And Publish Firmware Artifacts
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.discover.outputs.matrix }}
+      count: ${{ steps.discover.outputs.count }}
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v6
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-environment
+
+      - name: Discover Build Matrix
+        id: discover
+        shell: bash
+        run: |
+          pio project config --json-output > pio-config.json
+
+          python3 - <<'PY'
+          import json
+          import re
+          import os
+
+          with open('pio-config.json', 'r', encoding='utf-8') as f:
+              cfg = json.load(f)
+
+          role_re = re.compile(r'_(companion_radio_(?:usb|ble)|room_server|repeater)(?:_|$)')
+          platform_re = re.compile(r'(ESP32_PLATFORM|NRF52_PLATFORM|STM32_PLATFORM|RP2040_PLATFORM)')
+
+          matrix = []
+          for section, options in cfg:
+              if not section.startswith('env:'):
+                  continue
+
+              env_name = section.split(':', 1)[1]
+              if env_name == 'native':
+                  continue
+
+              role_match = role_re.search(env_name)
+              if not role_match:
+                  continue
+
+              role = role_match.group(1)
+              variant = env_name[:role_match.start()]
+
+              platform = 'UNKNOWN_PLATFORM'
+              build_flags = []
+              for key, value in options:
+                  if key == 'build_flags' and isinstance(value, list):
+                      build_flags = value
+                      break
+
+              for flag in build_flags:
+                  m = platform_re.search(str(flag))
+                  if m:
+                      platform = m.group(1)
+                      break
+
+              matrix.append(
+                  {
+                      'env_name': env_name,
+                      'variant': variant,
+                      'role': role,
+                      'platform': platform,
+                  }
+              )
+
+          matrix.sort(key=lambda x: x['env_name'].lower())
+
+          matrix_json = json.dumps(matrix, separators=(',', ':'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+              out.write(f'matrix={matrix_json}\n')
+              out.write(f'count={len(matrix)}\n')
+
+          print(f'Discovered {len(matrix)} role environments')
+          PY
+
+  build:
+    runs-on: ubuntu-latest
+    needs: discover
+    if: needs.discover.outputs.count != '0'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.discover.outputs.matrix) }}
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v6
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-environment
+
+      - name: Build Firmware
+        shell: bash
+        env:
+          ENV_NAME: ${{ matrix.env_name }}
+          ENV_PLATFORM: ${{ matrix.platform }}
+        run: |
+          pio run -e "$ENV_NAME"
+
+          if [ "$ENV_PLATFORM" = "ESP32_PLATFORM" ]; then
+            pio run -e "$ENV_NAME" -t mergebin
+          fi
+
+          if [ "$ENV_PLATFORM" = "NRF52_PLATFORM" ]; then
+            pio run -e "$ENV_NAME" -t create_uf2
+          fi
+
+      - name: Collect Build Outputs
+        shell: bash
+        env:
+          ENV_NAME: ${{ matrix.env_name }}
+          VARIANT_NAME: ${{ matrix.variant }}
+          ENV_ROLE: ${{ matrix.role }}
+          ENV_PLATFORM: ${{ matrix.platform }}
+        run: |
+          out_dir="artifacts/$ENV_NAME"
+          build_dir=".pio/build/$ENV_NAME"
+          mkdir -p "$out_dir"
+
+          python3 - <<'PY'
+          import json
+          import os
+
+          metadata = {
+              'env_name': os.environ['ENV_NAME'],
+              'variant': os.environ['VARIANT_NAME'],
+              'role': os.environ['ENV_ROLE'],
+              'platform': os.environ['ENV_PLATFORM'],
+          }
+
+          with open(os.path.join('artifacts', os.environ['ENV_NAME'], 'metadata.json'), 'w', encoding='utf-8') as f:
+              json.dump(metadata, f)
+          PY
+
+          if [ "$ENV_PLATFORM" = "ESP32_PLATFORM" ]; then
+            cp "$build_dir/firmware.bin" "$out_dir/${ENV_NAME}.bin" 2>/dev/null || true
+            cp "$build_dir/firmware-merged.bin" "$out_dir/${ENV_NAME}-merged.bin" 2>/dev/null || true
+          elif [ "$ENV_PLATFORM" = "NRF52_PLATFORM" ]; then
+            cp "$build_dir/firmware.uf2" "$out_dir/${ENV_NAME}.uf2" 2>/dev/null || true
+          elif [ "$ENV_PLATFORM" = "STM32_PLATFORM" ]; then
+            cp "$build_dir/firmware.bin" "$out_dir/${ENV_NAME}.bin" 2>/dev/null || true
+            cp "$build_dir/firmware.hex" "$out_dir/${ENV_NAME}.hex" 2>/dev/null || true
+          elif [ "$ENV_PLATFORM" = "RP2040_PLATFORM" ]; then
+            cp "$build_dir/firmware.bin" "$out_dir/${ENV_NAME}.bin" 2>/dev/null || true
+            cp "$build_dir/firmware.uf2" "$out_dir/${ENV_NAME}.uf2" 2>/dev/null || true
+          fi
+
+      - name: Upload Build Output
+        uses: actions/upload-artifact@v7
+        with:
+          name: fw-${{ matrix.env_name }}
+          path: artifacts/${{ matrix.env_name }}
+
+  package-and-publish:
+    runs-on: ubuntu-latest
+    needs:
+      - discover
+      - build
+    if: needs.discover.outputs.count != '0'
+    permissions:
+      contents: read
+    env:
+      ARTIFACT_REPO: ${{ github.repository_owner }}/MeshCore-Alt-Artifacts
+      GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v6
+
+      - name: Download All Build Artifacts
+        uses: actions/download-artifact@v6
+        with:
+          pattern: fw-*
+          path: collected
+          merge-multiple: false
+
+      - name: Install zip utility
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zip unzip
+
+      - name: Download Windows Esptool Binary
+        shell: bash
+        run: |
+          mkdir -p tools/esptool-win
+          curl -L -o tools/esptool-win/esptool.zip https://github.com/espressif/esptool/releases/download/v4.8.1/esptool-v4.8.1-win64.zip
+          unzip -q tools/esptool-win/esptool.zip -d tools/esptool-win
+          rm -f tools/esptool-win/esptool.zip
+
+      - name: Build Variant Zip Packages
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import shutil
+          from pathlib import Path
+
+          collected_root = Path('collected')
+          package_root = Path('packages')
+          staging_root = Path('staging')
+          tools_root = Path('tools/esptool-win')
+
+          package_root.mkdir(parents=True, exist_ok=True)
+          staging_root.mkdir(parents=True, exist_ok=True)
+
+          grouped = {}
+
+          for artifact_dir in sorted(collected_root.glob('fw-*')):
+              meta_path = artifact_dir / 'metadata.json'
+              if not meta_path.exists():
+                  continue
+
+              with meta_path.open('r', encoding='utf-8') as f:
+                  meta = json.load(f)
+
+              variant = meta['variant']
+              grouped.setdefault(variant, []).append((artifact_dir, meta))
+
+          if not grouped:
+              raise RuntimeError('No firmware artifacts were collected to package.')
+
+          for variant, entries in grouped.items():
+              safe_variant = re.sub(r'[^A-Za-z0-9._-]+', '-', variant)
+              variant_dir = staging_root / safe_variant
+              variant_dir.mkdir(parents=True, exist_ok=True)
+
+              contains_esp32 = False
+
+              for artifact_dir, meta in entries:
+                  platform = meta.get('platform', '')
+                  env_name = meta.get('env_name', artifact_dir.name)
+
+                  for file_path in artifact_dir.iterdir():
+                      if file_path.name == 'metadata.json':
+                          continue
+
+                      if platform == 'NRF52_PLATFORM':
+                          if file_path.suffix.lower() != '.uf2':
+                              continue
+
+                      shutil.copy2(file_path, variant_dir / file_path.name)
+
+                  if platform == 'ESP32_PLATFORM':
+                      contains_esp32 = True
+
+              if contains_esp32:
+                  flash_script = variant_dir / 'flash_with_esptool.bat'
+                  flash_script.write_text(
+                      '@echo off\r\n'
+                      'setlocal\r\n'
+                      'if "%~2"=="" (\r\n'
+                      '  echo Usage: %~nx0 ^<firmware_file.bin^> ^<COM_PORT^>\r\n'
+                      '  echo Example: %~nx0 MyFirmware-merged.bin COM3\r\n'
+                      '  exit /b 1\r\n'
+                      ')\r\n'
+                      'set "FIRMWARE_FILE=%~1"\r\n'
+                      'set "COM_PORT=%~2"\r\n'
+                      'if not exist "%FIRMWARE_FILE%" (\r\n'
+                      '  echo Firmware file not found: %FIRMWARE_FILE%\r\n'
+                      '  exit /b 1\r\n'
+                      ')\r\n'
+                      'if not exist "tools\\esptool\\esptool.exe" (\r\n'
+                      '  echo tools\\esptool\\esptool.exe was not found.\r\n'
+                      '  exit /b 1\r\n'
+                      ')\r\n'
+                      'tools\\esptool\\esptool.exe --chip auto --port %COM_PORT% --baud 921600 write_flash 0x0 "%FIRMWARE_FILE%"\r\n'
+                      'endlocal\r\n',
+                      encoding='utf-8'
+                  )
+
+                  esptool_target = variant_dir / 'tools' / 'esptool'
+                  esptool_target.mkdir(parents=True, exist_ok=True)
+
+                  esptool_exe = next(tools_root.rglob('esptool.exe'), None)
+                  if esptool_exe is None:
+                      raise RuntimeError('Could not find esptool.exe in downloaded package.')
+
+                  src_dir = esptool_exe.parent
+                  for item in src_dir.iterdir():
+                      target = esptool_target / item.name
+                      if item.is_dir():
+                          shutil.copytree(item, target, dirs_exist_ok=True)
+                      else:
+                          shutil.copy2(item, target)
+
+              zip_name = f'{safe_variant}.zip'
+              zip_path = package_root / zip_name
+              if zip_path.exists():
+                  zip_path.unlink()
+
+              shutil.make_archive(str(zip_path.with_suffix('')), 'zip', root_dir=variant_dir)
+
+          print('Created variant zip packages:')
+          for z in sorted(package_root.glob('*.zip')):
+              print(z)
+          PY
+
+      - name: Compute Release Tag
+        id: release_tag
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          from datetime import datetime, timezone
+
+          tags = subprocess.check_output(['git', 'tag', '--list'], text=True).splitlines()
+          versions = []
+          for t in tags:
+              m = re.search(r'v(\d+\.\d+\.\d+)$', t)
+              if m:
+                  parts = tuple(int(p) for p in m.group(1).split('.'))
+                  versions.append(parts)
+
+          if not versions:
+              raise RuntimeError('Could not determine meshcore version from git tags.')
+
+          latest = max(versions)
+          mesh_version = f'v{latest[0]}.{latest[1]}.{latest[2]}'
+
+          build_date = datetime.now(timezone.utc).strftime('%Y%m%d')
+          prefix = f'{mesh_version}-Alt-{build_date}'
+
+          artifact_repo = os.environ['ARTIFACT_REPO']
+          release_json = subprocess.check_output(
+              ['gh', 'release', 'list', '--repo', artifact_repo, '--limit', '200', '--json', 'tagName'],
+              text=True,
+          )
+          existing = [r['tagName'] for r in json.loads(release_json)]
+
+          max_seq = 0
+          pat = re.compile(r'^' + re.escape(prefix) + r'(\d{2})$')
+          for tag in existing:
+              m = pat.match(tag)
+              if m:
+                  max_seq = max(max_seq, int(m.group(1)))
+
+          next_seq = max_seq + 1
+          release_tag = f'{prefix}{next_seq:02d}'
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+              out.write(f'release_tag={release_tag}\n')
+              out.write(f'mesh_version={mesh_version}\n')
+
+          print(f'Release tag: {release_tag}')
+          PY
+
+      - name: Publish Release To Artifact Repository
+        shell: bash
+        run: |
+          gh release create "${{ steps.release_tag.outputs.release_tag }}" packages/*.zip \
+            --repo "$ARTIFACT_REPO" \
+            --title "${{ steps.release_tag.outputs.release_tag }}" \
+            --notes "Automated firmware artifact bundle for ${{ github.repository }}@${{ github.sha }}"
+
+      - name: Upload Workflow Packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: firmware-variant-zips
+          path: packages/*.zip

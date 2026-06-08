@@ -32,8 +32,50 @@ static uint32_t _atoi(const char* sp) {
 #elif defined(ESP32)
   #include <SPIFFS.h>
   DataStore store(SPIFFS, rtc_clock);
-#endif
+#if defined(ARDUINO_M5STACK_CORE2)
+  #include <SD.h>
+  #include <M5Core2.h>
 
+  constexpr uint8_t kCore2HeartbeatPin = 14;
+  constexpr unsigned long kCore2HeartbeatPeriodMs = 30000UL;
+  constexpr unsigned long kCore2HeartbeatHighMs = 5000UL;
+
+  static void initCore2SdCard() {
+    uint8_t card_type = SD.cardType();
+    if (card_type == CARD_NONE) {
+      Serial.println("SD: mount failed, retrying at lower SPI speed");
+      if (!SD.begin(TFCARD_CS_PIN, SPI, 10000000)) {
+        Serial.println("SD: retry failed");
+        return;
+      }
+      card_type = SD.cardType();
+    }
+
+    if (!SD.exists("/meshcore")) {
+      SD.mkdir("/meshcore");
+    }
+
+    uint64_t total_bytes = SD.totalBytes();
+    uint64_t used_bytes = SD.usedBytes();
+    Serial.printf("SD: mounted type=%u total=%lluKB used=%lluKB\n",
+                  static_cast<unsigned>(card_type),
+                  static_cast<unsigned long long>(total_bytes / 1024ULL),
+                  static_cast<unsigned long long>(used_bytes / 1024ULL));
+  }
+
+  static void updateCore2HeartbeatPulse() {
+    static bool initialized = false;
+    if (!initialized) {
+      pinMode(kCore2HeartbeatPin, OUTPUT);
+      digitalWrite(kCore2HeartbeatPin, LOW);
+      initialized = true;
+    }
+
+    const bool pulse_high = (millis() % kCore2HeartbeatPeriodMs) < kCore2HeartbeatHighMs;
+    digitalWrite(kCore2HeartbeatPin, pulse_high ? HIGH : LOW);
+  }
+#endif
+#endif
 #ifdef ESP32
   #ifdef WIFI_SSID
     #include <helpers/esp32/SerialWifiInterface.h>
@@ -113,23 +155,52 @@ void halt() {
 
 void setup() {
   Serial.begin(115200);
-
-  board.begin();
+  delay(50);
 
 #ifdef DISPLAY_CLASS
   DisplayDriver* disp = NULL;
-  if (display.begin()) {
-    disp = &display;
+  bool display_ready = false;
+  auto showBootStatus = [&](const char* msg) {
+    if (!display_ready || disp == NULL) {
+      return;
+    }
     disp->startFrame();
-  #ifdef ST7789
-    disp->setTextSize(2);
-  #endif
-    disp->drawTextCentered(disp->width() / 2, 28, "Loading...");
+    disp->setColor(DisplayDriver::LIGHT);
+    disp->setCursor(0, 0);
+    disp->print(msg);
     disp->endFrame();
+  };
+
+  display_ready = display.begin();
+  if (display_ready) {
+    disp = &display;
+    showBootStatus("Please wait...\nInit radio...");
   }
+#else
+  auto showBootStatus = [&](const char*) {};
 #endif
 
-  if (!radio_init()) { halt(); }
+  board.begin();
+
+#if defined(CORE2_ALWAYS_POWERED) && CORE2_ALWAYS_POWERED
+  board.setInhibitSleep(true);
+  Serial.println("PWR: sleep inhibited (always powered build)");
+#endif
+
+  if (!radio_init()) {
+#ifdef DISPLAY_CLASS
+    if (display_ready && disp != NULL) {
+      disp->startFrame();
+      disp->setColor(DisplayDriver::LIGHT);
+      disp->setCursor(0, 0);
+      disp->print("Radio init failed");
+      disp->endFrame();
+    }
+#endif
+    halt();
+  }
+
+  showBootStatus("Radio OK");
 
   fast_rng.begin(radio_driver.getRngSeed());
 
@@ -190,6 +261,9 @@ void setup() {
     the_mesh.startInterface(serial_interface);
 #elif defined(ESP32)
   SPIFFS.begin(true);
+#if defined(ARDUINO_M5STACK_CORE2)
+  initCore2SdCard();
+#endif
   store.begin();
   the_mesh.begin(
     #ifdef DISPLAY_CLASS
@@ -240,9 +314,15 @@ void setup() {
 #endif
 
   board.onBootComplete();
+#if defined(ARDUINO_M5STACK_CORE2)
+  updateCore2HeartbeatPulse();
+#endif
 }
 
 void loop() {
+#if defined(ARDUINO_M5STACK_CORE2)
+  updateCore2HeartbeatPulse();
+#endif
   the_mesh.loop();
   sensors.loop();
 #ifdef DISPLAY_CLASS

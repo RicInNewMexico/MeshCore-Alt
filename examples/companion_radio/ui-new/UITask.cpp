@@ -2,6 +2,38 @@
 #include <helpers/TxtDataHelpers.h>
 #include "../MyMesh.h"
 #include "target.h"
+#if defined(ARDUINO_M5STACK_CORE2)
+#include <M5Core2.h>
+#include <SD.h>
+#include "ProtoNerdFont.h"
+#include "ProtoNerdValueFont.h"
+#ifndef CORE2_TOUCH_DEBUG_LOGGING
+  #define CORE2_TOUCH_DEBUG_LOGGING 1
+#endif
+#if CORE2_TOUCH_DEBUG_LOGGING
+  #define CORE2_TOUCH_TRACE(fmt, ...) MESH_DEBUG_PRINTLN("core2-touch: " fmt, ##__VA_ARGS__)
+#else
+  #define CORE2_TOUCH_TRACE(...) do {} while (0)
+#endif
+#ifdef RED
+#undef RED
+#endif
+#ifdef GREEN
+#undef GREEN
+#endif
+#ifdef BLUE
+#undef BLUE
+#endif
+#ifdef YELLOW
+#undef YELLOW
+#endif
+#ifdef ORANGE
+#undef ORANGE
+#endif
+#endif
+#ifndef CORE2_TOUCH_TRACE
+  #define CORE2_TOUCH_TRACE(...) do {} while (0)
+#endif
 #ifdef WIFI_SSID
   #include <WiFi.h>
 #endif
@@ -18,6 +50,9 @@
 #endif
 
 #define LONG_PRESS_MILLIS   1200
+#define CORE2_MODE_SWITCH_LONG_PRESS_MILLIS 1000
+#define CORE2_SWIPE_MIN_DX 50
+#define CORE2_SWIPE_MAX_DY 80
 
 #ifndef UI_RECENT_LIST_SIZE
   #define UI_RECENT_LIST_SIZE 4
@@ -30,6 +65,121 @@
 #endif
 
 #include "icons.h"
+
+#if defined(ARDUINO_M5STACK_CORE2)
+static void formatStorageBytes(char* out, size_t out_len, uint64_t bytes) {
+  if (bytes >= (1024ULL * 1024ULL * 1024ULL)) {
+    snprintf(out, out_len, "%.2f GB", bytes / 1073741824.0);
+  } else {
+    snprintf(out, out_len, "%.0f MB", bytes / 1048576.0);
+  }
+}
+
+static void drawCore2NerdText(int x, int y, const char* text, uint16_t color) {
+  proto_nerd_font::drawTextTransparent(M5.Lcd, x, y, text, color, 1);
+}
+
+static void drawCore2NerdCentered(int mid_x, int y, const char* text, uint16_t color) {
+  const int width = proto_nerd_font::textWidth(text, 1);
+  drawCore2NerdText(mid_x - (width / 2), y, text, color);
+}
+
+static void drawCore2NerdRight(int right_x, int y, const char* text, uint16_t color) {
+  const int width = proto_nerd_font::textWidth(text, 1);
+  drawCore2NerdText(right_x - width, y, text, color);
+}
+
+static void drawCore2ValueCentered(int mid_x, int y, const char* text, uint16_t color) {
+  const int width = proto_nerd_value_font::textWidth(text, 1);
+  proto_nerd_value_font::drawTextTransparent(M5.Lcd, mid_x - (width / 2), y, text, color, 1);
+}
+
+static void drawCore2NerdEllipsized(int x, int y, int max_width, const char* text, uint16_t color) {
+  char temp[128];
+  StrHelper::strncpy(temp, text, sizeof(temp));
+  if (proto_nerd_font::textWidth(temp, 1) <= max_width) {
+    drawCore2NerdText(x, y, temp, color);
+    return;
+  }
+
+  while (temp[0] != 0) {
+    const size_t len = strlen(temp);
+    temp[len - 1] = 0;
+    char candidate[128];
+    snprintf(candidate, sizeof(candidate), "%s...", temp);
+    if (proto_nerd_font::textWidth(candidate, 1) <= max_width) {
+      drawCore2NerdText(x, y, candidate, color);
+      return;
+    }
+  }
+
+  drawCore2NerdText(x, y, "...", color);
+}
+
+static int drawCore2NerdWrapped(int x, int y, int max_width, const char* text, uint16_t color, int line_height) {
+  char remaining[192];
+  StrHelper::strncpy(remaining, text, sizeof(remaining));
+  int line_y = y;
+
+  while (remaining[0] != 0) {
+    char line[96] = "";
+    char* cursor = remaining;
+    char* last_space = nullptr;
+
+    while (*cursor != 0) {
+      const size_t candidate_len = static_cast<size_t>(cursor - remaining + 1);
+      char candidate[96];
+      if (candidate_len >= sizeof(candidate)) {
+        break;
+      }
+      memcpy(candidate, remaining, candidate_len);
+      candidate[candidate_len] = 0;
+      if (proto_nerd_font::textWidth(candidate, 1) > max_width) {
+        break;
+      }
+      if (*cursor == ' ') {
+        last_space = cursor;
+      }
+      ++cursor;
+    }
+
+    if (*cursor == 0 && proto_nerd_font::textWidth(remaining, 1) <= max_width) {
+      drawCore2NerdText(x, line_y, remaining, color);
+      line_y += line_height;
+      break;
+    }
+
+    if (last_space != nullptr) {
+      const size_t line_len = static_cast<size_t>(last_space - remaining);
+      memcpy(line, remaining, line_len);
+      line[line_len] = 0;
+      while (*last_space == ' ') {
+        ++last_space;
+      }
+      memmove(remaining, last_space, strlen(last_space) + 1);
+    } else {
+      size_t take = 1;
+      while (remaining[take] != 0) {
+        char probe[96];
+        memcpy(probe, remaining, take + 1);
+        probe[take + 1] = 0;
+        if (proto_nerd_font::textWidth(probe, 1) > max_width) {
+          break;
+        }
+        ++take;
+      }
+      memcpy(line, remaining, take);
+      line[take] = 0;
+      memmove(remaining, remaining + take, strlen(remaining + take) + 1);
+    }
+
+    drawCore2NerdText(x, line_y, line, color);
+    line_y += line_height;
+  }
+
+  return line_y;
+}
+#endif
 
 class SplashScreen : public UIScreen {
   UITask* _task;
@@ -95,6 +245,9 @@ class HomeScreen : public UIScreen {
 #endif
 #if UI_SENSORS_PAGE == 1
     SENSORS,
+#endif
+#if defined(ARDUINO_M5STACK_CORE2)
+  STORAGE,
 #endif
     SHUTDOWN,
     Count    // keep as last
@@ -181,6 +334,8 @@ public:
      : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs), _page(0),
        _shutdown_init(false), sensors_lpp(200) {  }
 
+  bool isFirstPanel() const { return _page == HomePage::FIRST; }
+
   void poll() override {
     if (_shutdown_init && !_task->isButtonPressed()) {  // must wait for USR button to be released
       _task->shutdown();
@@ -188,6 +343,204 @@ public:
   }
 
   int render(DisplayDriver& display) override {
+#if defined(ARDUINO_M5STACK_CORE2)
+    M5.Lcd.fillScreen(TFT_BLACK);
+
+    char tmp_core[80];
+    char filtered_name_core[sizeof(_node_prefs->node_name)];
+    display.translateUTF8ToBlocks(filtered_name_core, _node_prefs->node_name, sizeof(filtered_name_core));
+    drawCore2NerdText(10, 8, filtered_name_core, TFT_GREEN);
+    renderBatteryIndicator(display, _task->getBattMilliVolts());
+
+    int indicator_x = (display.width() / 2) - (9 * (HomePage::Count - 1));
+    for (uint8_t i = 0; i < HomePage::Count; i++, indicator_x += 18) {
+      M5.Lcd.fillRoundRect(indicator_x, 30, (i == _page) ? 12 : 6, 6, 3, (i == _page) ? TFT_CYAN : TFT_DARKGREY);
+    }
+
+    if (_page == HomePage::FIRST) {
+      drawCore2NerdCentered(display.width() / 2, 56, "MESSAGES", TFT_YELLOW);
+      snprintf(tmp_core, sizeof(tmp_core), "%d", _task->getMsgCount());
+      drawCore2ValueCentered(display.width() / 2, 84, tmp_core, TFT_WHITE);
+
+      if (_task->hasConnection()) {
+        drawCore2NerdCentered(display.width() / 2, 142, "CONNECTED", TFT_GREEN);
+      } else if (the_mesh.getBLEPin() != 0) {
+        snprintf(tmp_core, sizeof(tmp_core), "PIN %d", the_mesh.getBLEPin());
+        drawCore2NerdCentered(display.width() / 2, 142, tmp_core, TFT_RED);
+      }
+
+#ifdef WIFI_SSID
+      IPAddress ip = WiFi.localIP();
+      snprintf(tmp_core, sizeof(tmp_core), "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+      drawCore2NerdCentered(display.width() / 2, 172, tmp_core, TFT_WHITE);
+#endif
+      drawCore2NerdCentered(display.width() / 2, 202, "SWIPE FOR PANELS", TFT_DARKGREY);
+      return 5000;
+    }
+
+    if (_page == HomePage::RECENT) {
+      the_mesh.getRecentlyHeard(recent, UI_RECENT_LIST_SIZE);
+      drawCore2NerdCentered(display.width() / 2, 48, "RECENT NODES", TFT_YELLOW);
+      int row_y = 78;
+      for (int i = 0; i < UI_RECENT_LIST_SIZE; i++, row_y += 34) {
+        auto a = &recent[i];
+        if (a->name[0] == 0) continue;
+        int secs = _rtc->getCurrentTime() - a->recv_timestamp;
+        if (secs < 60) snprintf(tmp_core, sizeof(tmp_core), "%ds", secs);
+        else if (secs < 3600) snprintf(tmp_core, sizeof(tmp_core), "%dm", secs / 60);
+        else snprintf(tmp_core, sizeof(tmp_core), "%dh", secs / 3600);
+
+        char filtered_recent_name[sizeof(a->name)];
+        display.translateUTF8ToBlocks(filtered_recent_name, a->name, sizeof(filtered_recent_name));
+        drawCore2NerdEllipsized(12, row_y, display.width() - proto_nerd_font::textWidth(tmp_core, 1) - 28, filtered_recent_name, TFT_GREEN);
+        drawCore2NerdRight(display.width() - 12, row_y, tmp_core, TFT_WHITE);
+      }
+      return 5000;
+    }
+
+    if (_page == HomePage::RADIO) {
+      drawCore2NerdCentered(display.width() / 2, 48, "RADIO", TFT_YELLOW);
+      snprintf(tmp_core, sizeof(tmp_core), "FREQ %.3f", _node_prefs->freq);
+      drawCore2NerdText(16, 82, tmp_core, TFT_WHITE);
+      snprintf(tmp_core, sizeof(tmp_core), "SF %d   BW %.2f", _node_prefs->sf, _node_prefs->bw);
+      drawCore2NerdText(16, 114, tmp_core, TFT_WHITE);
+      snprintf(tmp_core, sizeof(tmp_core), "CR %d   TX %ddBm", _node_prefs->cr, _node_prefs->tx_power_dbm);
+      drawCore2NerdText(16, 146, tmp_core, TFT_WHITE);
+      snprintf(tmp_core, sizeof(tmp_core), "NOISE FLOOR %d", radio_driver.getNoiseFloor());
+      drawCore2NerdText(16, 178, tmp_core, TFT_WHITE);
+      return 5000;
+    }
+
+    if (_page == HomePage::BLUETOOTH) {
+      M5.Lcd.drawXBitmap((display.width() - 32) / 2, 70,
+          _task->isSerialEnabled() ? bluetooth_on : bluetooth_off,
+          32, 32, TFT_GREEN);
+      drawCore2NerdCentered(display.width() / 2, 48, "BLUETOOTH", TFT_YELLOW);
+      drawCore2NerdCentered(display.width() / 2, 148, _task->isSerialEnabled() ? "ENABLED" : "DISABLED", TFT_WHITE);
+      drawCore2NerdCentered(display.width() / 2, 198, "LONG PRESS TO TOGGLE", TFT_DARKGREY);
+      return 5000;
+    }
+
+    if (_page == HomePage::ADVERT) {
+      M5.Lcd.drawXBitmap((display.width() - 32) / 2, 70, advert_icon, 32, 32, TFT_GREEN);
+      drawCore2NerdCentered(display.width() / 2, 48, "ADVERT", TFT_YELLOW);
+      drawCore2NerdCentered(display.width() / 2, 148, "SEND NODE ADVERT", TFT_WHITE);
+      drawCore2NerdCentered(display.width() / 2, 198, "LONG PRESS TO SEND", TFT_DARKGREY);
+      return 5000;
+    }
+#if defined(ARDUINO_M5STACK_CORE2)
+    if (_page == HomePage::STORAGE) {
+      const bool mounted = (SD.cardType() != CARD_NONE) && (SD.totalBytes() > 0);
+      const uint64_t total_bytes = mounted ? SD.totalBytes() : 0;
+      const uint64_t used_bytes = mounted ? SD.usedBytes() : 0;
+      char total_buf[24];
+      char used_buf[24];
+      formatStorageBytes(total_buf, sizeof(total_buf), total_bytes);
+      formatStorageBytes(used_buf, sizeof(used_buf), used_bytes);
+
+      M5.Lcd.drawXBitmap((display.width() - 32) / 2, 62, sdcard_icon, 32, 32, TFT_GREEN);
+      drawCore2NerdCentered(display.width() / 2, 48, "STORAGE", TFT_YELLOW);
+      drawCore2NerdText(16, 118, "STATE", TFT_GREEN);
+      drawCore2NerdRight(display.width() - 16, 118, mounted ? "MOUNTED" : "NOT MOUNTED", mounted ? TFT_WHITE : TFT_RED);
+      drawCore2NerdText(16, 150, "USED", TFT_GREEN);
+      drawCore2NerdRight(display.width() - 16, 150, used_buf, TFT_WHITE);
+      drawCore2NerdText(16, 182, "TOTAL", TFT_GREEN);
+      drawCore2NerdRight(display.width() - 16, 182, total_buf, TFT_WHITE);
+      return 5000;
+    }
+#endif
+#if ENV_INCLUDE_GPS == 1
+    if (_page == HomePage::GPS) {
+      LocationProvider* nmea = sensors.getLocationProvider();
+      char buf[50];
+      int row_y = 50;
+      bool gps_state = _task->getGPSState();
+      drawCore2NerdCentered(display.width() / 2, 20, "GPS", TFT_YELLOW);
+#ifdef PIN_GPS_SWITCH
+      bool hw_gps_state = digitalRead(PIN_GPS_SWITCH);
+      if (gps_state != hw_gps_state) strcpy(buf, gps_state ? "OFF (HW)" : "OFF (SW)");
+      else strcpy(buf, gps_state ? "ON" : "OFF");
+#else
+      strcpy(buf, gps_state ? "ON" : "OFF");
+#endif
+      drawCore2NerdText(16, row_y, "STATE", TFT_GREEN);
+      drawCore2NerdRight(display.width() - 16, row_y, buf, TFT_WHITE);
+      row_y += 32;
+      if (nmea == NULL) {
+        drawCore2NerdCentered(display.width() / 2, row_y, "CAN'T ACCESS GPS", TFT_RED);
+      } else {
+        drawCore2NerdText(16, row_y, "FIX", TFT_GREEN);
+        drawCore2NerdRight(display.width() - 16, row_y, nmea->isValid() ? "YES" : "NO", TFT_WHITE);
+        row_y += 32;
+        drawCore2NerdText(16, row_y, "SAT", TFT_GREEN);
+        snprintf(buf, sizeof(buf), "%d", nmea->satellitesCount());
+        drawCore2NerdRight(display.width() - 16, row_y, buf, TFT_WHITE);
+        row_y += 32;
+        drawCore2NerdText(16, row_y, "POS", TFT_GREEN);
+        snprintf(buf, sizeof(buf), "%.4f %.4f", nmea->getLatitude()/1000000., nmea->getLongitude()/1000000.);
+        drawCore2NerdRight(display.width() - 16, row_y, buf, TFT_WHITE);
+        row_y += 32;
+        drawCore2NerdText(16, row_y, "ALT", TFT_GREEN);
+        snprintf(buf, sizeof(buf), "%.2f", nmea->getAltitude()/1000.);
+        drawCore2NerdRight(display.width() - 16, row_y, buf, TFT_WHITE);
+      }
+      return 5000;
+    }
+#endif
+#if UI_SENSORS_PAGE == 1
+    if (_page == HomePage::SENSORS) {
+      int y = 50;
+      refresh_sensors();
+      char buf[30];
+      char name[30];
+      LPPReader r(sensors_lpp.getBuffer(), sensors_lpp.getSize());
+      drawCore2NerdCentered(display.width() / 2, 20, "SENSORS", TFT_YELLOW);
+
+      for (int i = 0; i < sensors_scroll_offset; i++) {
+        uint8_t channel, type;
+        r.readHeader(channel, type);
+        r.skipData(type);
+      }
+
+      for (int i = 0; i < (sensors_scroll ? UI_RECENT_LIST_SIZE : sensors_nb); i++) {
+        uint8_t channel, type;
+        if (!r.readHeader(channel, type)) {
+          r.reset();
+          r.readHeader(channel, type);
+        }
+
+        float v;
+        switch (type) {
+          case LPP_GPS: { float lat, lon, alt; r.readGPS(lat, lon, alt); strcpy(name, "gps"); sprintf(buf, "%.4f %.4f", lat, lon); break; }
+          case LPP_VOLTAGE: r.readVoltage(v); strcpy(name, "voltage"); sprintf(buf, "%6.2f", v); break;
+          case LPP_CURRENT: r.readCurrent(v); strcpy(name, "current"); sprintf(buf, "%.3f", v); break;
+          case LPP_TEMPERATURE: r.readTemperature(v); strcpy(name, "temperature"); sprintf(buf, "%.2f", v); break;
+          case LPP_RELATIVE_HUMIDITY: r.readRelativeHumidity(v); strcpy(name, "humidity"); sprintf(buf, "%.2f", v); break;
+          case LPP_BAROMETRIC_PRESSURE: r.readPressure(v); strcpy(name, "pressure"); sprintf(buf, "%.2f", v); break;
+          case LPP_ALTITUDE: r.readAltitude(v); strcpy(name, "altitude"); sprintf(buf, "%.0f", v); break;
+          case LPP_POWER: r.readPower(v); strcpy(name, "power"); sprintf(buf, "%6.2f", v); break;
+          default: r.skipData(type); strcpy(name, "unk"); sprintf(buf, "");
+        }
+        drawCore2NerdText(12, y, name, TFT_GREEN);
+        drawCore2NerdRight(display.width() - 12, y, buf, TFT_WHITE);
+        y += 28;
+      }
+      if (sensors_scroll) sensors_scroll_offset = (sensors_scroll_offset + 1) % sensors_nb;
+      else sensors_scroll_offset = 0;
+      return 5000;
+    }
+#endif
+    drawCore2NerdCentered(display.width() / 2, 48, "POWER", TFT_YELLOW);
+    if (_shutdown_init) {
+      drawCore2NerdCentered(display.width() / 2, 148, "HIBERNATING...", TFT_WHITE);
+    } else {
+      M5.Lcd.drawXBitmap((display.width() - 32) / 2, 70, power_icon, 32, 32, TFT_GREEN);
+      drawCore2NerdCentered(display.width() / 2, 148, "ENTER HIBERNATE", TFT_WHITE);
+      drawCore2NerdCentered(display.width() / 2, 198, "LONG PRESS TO CONFIRM", TFT_DARKGREY);
+    }
+    return 5000;
+#endif
+
     char tmp[80];
     // node name
     display.setTextSize(1);
@@ -289,6 +642,25 @@ public:
       display.setColor(DisplayDriver::GREEN);
       display.drawXbm((display.width() - 32) / 2, 18, advert_icon, 32, 32);
       display.drawTextCentered(display.width() / 2, 64 - 11, "advert: " PRESS_LABEL);
+#if defined(ARDUINO_M5STACK_CORE2)
+    } else if (_page == HomePage::STORAGE) {
+      const bool mounted = (SD.cardType() != CARD_NONE) && (SD.totalBytes() > 0);
+      const uint64_t total_bytes = mounted ? SD.totalBytes() : 0;
+      const uint64_t used_bytes = mounted ? SD.usedBytes() : 0;
+      char total_buf[24];
+      char used_buf[24];
+      formatStorageBytes(total_buf, sizeof(total_buf), total_bytes);
+      formatStorageBytes(used_buf, sizeof(used_buf), used_bytes);
+
+      display.setColor(DisplayDriver::GREEN);
+      display.drawXbm((display.width() - 32) / 2, 18, sdcard_icon, 32, 32);
+      display.setTextSize(1);
+      display.drawTextCentered(display.width() / 2, 64 - 11, mounted ? "mounted" : "not mounted");
+      display.drawTextLeftAlign(0, 92, "used");
+      display.drawTextRightAlign(display.width() - 1, 92, used_buf);
+      display.drawTextLeftAlign(0, 104, "total");
+      display.drawTextRightAlign(display.width() - 1, 104, total_buf);
+#endif
 #if ENV_INCLUDE_GPS == 1
     } else if (_page == HomePage::GPS) {
       LocationProvider* nmea = sensors.getLocationProvider();
@@ -472,7 +844,9 @@ class MsgPreviewScreen : public UIScreen {
     char origin[62];
     char msg[78];
   };
-  #define MAX_UNREAD_MSGS   32
+  #ifndef MAX_UNREAD_MSGS
+    #define MAX_UNREAD_MSGS 32
+  #endif
   int num_unread;
   int head = MAX_UNREAD_MSGS - 1; // index of latest unread message
   MsgEntry unread[MAX_UNREAD_MSGS];
@@ -495,6 +869,40 @@ public:
   }
 
   int render(DisplayDriver& display) override {
+#if defined(ARDUINO_M5STACK_CORE2)
+    M5.Lcd.fillScreen(TFT_BLACK);
+    char tmp_core[16];
+    drawCore2NerdText(10, 8, "UNREAD", TFT_GREEN);
+    snprintf(tmp_core, sizeof(tmp_core), "%d", num_unread);
+    drawCore2NerdRight(display.width() - 10, 8, tmp_core, TFT_GREEN);
+
+    auto preview = &unread[head];
+    int preview_secs = _rtc->getCurrentTime() - preview->timestamp;
+    if (preview_secs < 60) {
+      snprintf(tmp_core, sizeof(tmp_core), "%ds", preview_secs);
+    } else if (preview_secs < 60*60) {
+      snprintf(tmp_core, sizeof(tmp_core), "%dm", preview_secs / 60);
+    } else {
+      snprintf(tmp_core, sizeof(tmp_core), "%dh", preview_secs / (60*60));
+    }
+    drawCore2NerdRight(display.width() - 10, 30, tmp_core, TFT_DARKGREY);
+    M5.Lcd.drawFastHLine(10, 54, display.width() - 20, TFT_DARKGREY);
+
+    char filtered_origin_core[sizeof(preview->origin)];
+    display.translateUTF8ToBlocks(filtered_origin_core, preview->origin, sizeof(filtered_origin_core));
+    drawCore2NerdEllipsized(10, 70, display.width() - 20, filtered_origin_core, TFT_YELLOW);
+
+    char filtered_msg_core[sizeof(preview->msg)];
+    display.translateUTF8ToBlocks(filtered_msg_core, preview->msg, sizeof(filtered_msg_core));
+    drawCore2NerdWrapped(10, 102, display.width() - 20, filtered_msg_core, TFT_WHITE, 22);
+
+#if AUTO_OFF_MILLIS==0
+    return 10000;
+#else
+    return 1000;
+#endif
+#endif
+
     char tmp[16];
     display.setCursor(0, 0);
     display.setTextSize(1);
@@ -590,6 +998,65 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
   msg_preview = new MsgPreviewScreen(this, &rtc_clock);
   setCurrScreen(splash);
 }
+
+#if defined(ARDUINO_M5STACK_CORE2)
+char UITask::handleCore2TouchToggle() {
+  M5.update();
+  char action = 0;
+  const bool pressed = (M5.Touch.points > 0);
+  const unsigned long now = millis();
+
+  if (pressed) {
+    _core2_touch_last_x = M5.Touch.point[0].x;
+    _core2_touch_last_y = M5.Touch.point[0].y;
+  }
+
+  if (pressed && !_core2_touch_was_pressed) {
+    if (_display != NULL && !_display->isOn()) {
+      _display->turnOn();
+      _auto_off = now + AUTO_OFF_MILLIS;
+      _next_refresh = 0;
+      CORE2_TOUCH_TRACE("wake-on-touch");
+    }
+    _core2_touch_press_started_at = now;
+    _core2_touch_longpress_fired = false;
+    _core2_touch_start_x = _core2_touch_last_x;
+    _core2_touch_start_y = _core2_touch_last_y;
+    CORE2_TOUCH_TRACE("down x=%d y=%d points=%d display_on=%d", _core2_touch_start_x, _core2_touch_start_y, M5.Touch.points, (_display != NULL && _display->isOn()) ? 1 : 0);
+  }
+
+  if (pressed && !_core2_touch_longpress_fired && now >= _core2_touch_debounce_until) {
+    if ((uint32_t)(now - _core2_touch_press_started_at) >= CORE2_MODE_SWITCH_LONG_PRESS_MILLIS) {
+      _core2_touch_longpress_fired = true;
+      _core2_touch_debounce_until = now + 250;
+      action = KEY_ENTER;
+      CORE2_TOUCH_TRACE("long-press panel-action");
+
+      _next_refresh = 0;
+      _auto_off = millis() + AUTO_OFF_MILLIS;
+    }
+  }
+
+  if (!pressed && _core2_touch_was_pressed) {
+    if (!_core2_touch_longpress_fired && curr == home) {
+      const int dx = _core2_touch_last_x - _core2_touch_start_x;
+      const int dy = _core2_touch_last_y - _core2_touch_start_y;
+      if (abs(dx) >= CORE2_SWIPE_MIN_DX && abs(dy) <= CORE2_SWIPE_MAX_DY) {
+        action = (dx < 0) ? KEY_RIGHT : KEY_LEFT;
+        CORE2_TOUCH_TRACE("swipe dx=%d dy=%d action=%s", dx, dy, dx < 0 ? "right" : "left");
+      }
+      else {
+        CORE2_TOUCH_TRACE("release dx=%d dy=%d no-swipe", dx, dy);
+      }
+    } else {
+      CORE2_TOUCH_TRACE("release longpress=%d", _core2_touch_longpress_fired ? 1 : 0);
+    }
+  }
+
+  _core2_touch_was_pressed = pressed;
+  return action;
+}
+#endif
 
 void UITask::showAlert(const char* text, int duration_millis) {
   strcpy(_alert, text);
@@ -713,6 +1180,9 @@ bool UITask::isButtonPressed() const {
 
 void UITask::loop() {
   char c = 0;
+#if defined(ARDUINO_M5STACK_CORE2)
+  c = handleCore2TouchToggle();
+#endif
 #if UI_HAS_JOYSTICK
   int ev = user_btn.check();
   if (ev == BUTTON_EVENT_CLICK) {
@@ -790,23 +1260,25 @@ void UITask::loop() {
   if (curr) curr->poll();
 
   if (_display != NULL && _display->isOn()) {
-    if (millis() >= _next_refresh && curr) {
-      _display->startFrame();
-      int delay_millis = curr->render(*_display);
-      if (millis() < _alert_expiry) {  // render alert popup
-        _display->setTextSize(1);
-        int y = _display->height() / 3;
-        int p = _display->height() / 32;
-        _display->setColor(DisplayDriver::DARK);
-        _display->fillRect(p, y, _display->width() - p*2, y);
-        _display->setColor(DisplayDriver::LIGHT);  // draw box border
-        _display->drawRect(p, y, _display->width() - p*2, y);
-        _display->drawTextCentered(_display->width() / 2, y + p*3, _alert);
-        _next_refresh = _alert_expiry;   // will need refresh when alert is dismissed
-      } else {
-        _next_refresh = millis() + delay_millis;
+    if (millis() >= _next_refresh) {
+      if (curr) {
+        _display->startFrame();
+        int delay_millis = curr->render(*_display);
+        if (millis() < _alert_expiry) {  // render alert popup
+          _display->setTextSize(1);
+          int y = _display->height() / 3;
+          int p = _display->height() / 32;
+          _display->setColor(DisplayDriver::DARK);
+          _display->fillRect(p, y, _display->width() - p*2, y);
+          _display->setColor(DisplayDriver::LIGHT);  // draw box border
+          _display->drawRect(p, y, _display->width() - p*2, y);
+          _display->drawTextCentered(_display->width() / 2, y + p*3, _alert);
+          _next_refresh = _alert_expiry;   // will need refresh when alert is dismissed
+        } else {
+          _next_refresh = millis() + delay_millis;
+        }
+        _display->endFrame();
       }
-      _display->endFrame();
     }
 #if AUTO_OFF_MILLIS > 0
 #ifdef KEEP_DISPLAY_ON_USB
@@ -819,6 +1291,7 @@ void UITask::loop() {
     }
 #endif
     if (millis() > _auto_off) {
+      CORE2_TOUCH_TRACE("display auto-off");
       _display->turnOff();
     }
 #endif

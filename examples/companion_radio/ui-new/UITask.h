@@ -38,6 +38,16 @@ class UITask : public AbstractUITask {
   int _msgcount;
   unsigned long ui_started_at, next_batt_chck;
   int next_backlight_btn_check = 0;
+#if defined(ARDUINO_M5STACK_CORE2)
+  bool _core2_touch_was_pressed = false;
+  bool _core2_touch_longpress_fired = false;
+  unsigned long _core2_touch_press_started_at = 0;
+  unsigned long _core2_touch_debounce_until = 0;
+  int16_t _core2_touch_start_x = 0;
+  int16_t _core2_touch_start_y = 0;
+  int16_t _core2_touch_last_x = 0;
+  int16_t _core2_touch_last_y = 0;
+#endif
 #ifdef PIN_STATUS_LED
   int led_state = 0;
   int next_led_change = 0;
@@ -62,6 +72,10 @@ class UITask : public AbstractUITask {
   char handleTripleClick(char c);
 
   void setCurrScreen(UIScreen* c);
+
+#if defined(ARDUINO_M5STACK_CORE2)
+  char handleCore2TouchToggle();
+#endif
 
 public:
 

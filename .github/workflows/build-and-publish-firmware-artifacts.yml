@@ -82,6 +82,7 @@ jobs:
               'waveshare_rp2040_lora',
               'promicro',
               'lilygo_teth_elite',
+              'tenstar_esp32_c3',
               'gat562_30s_mesh_kit',
               'gat562_mesh_evb_pro',
               'gat562_mesh_tracker_pro',
@@ -103,7 +104,7 @@ jobs:
 
           def is_excluded(variant: str) -> bool:
               v = norm(variant)
-              if v in exact_excludes:
+              if any(v == p or v.startswith(p) for p in exact_excludes):
                   return True
               if any(v.startswith(p) for p in prefix_excludes):
                   return True

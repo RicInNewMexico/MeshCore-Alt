@@ -5,6 +5,15 @@ permissions:
 
 on:
   workflow_call:
+    inputs:
+      platform_filter:
+        description: PlatformIO platform constant to include (for example ESP32_PLATFORM)
+        required: true
+        type: string
+      workflow_label:
+        description: Human-friendly label for release titles and notes
+        required: true
+        type: string
   workflow_dispatch:
   push:
     branches:

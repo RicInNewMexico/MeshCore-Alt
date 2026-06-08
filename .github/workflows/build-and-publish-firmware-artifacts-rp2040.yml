@@ -1,0 +1,18 @@
+name: Build And Publish Firmware Artifacts (RP2040)
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-publish:
+    uses: ./.github/workflows/build-and-publish-firmware-artifacts.yml
+    with:
+      platform_filter: RP2040_PLATFORM
+      workflow_label: RP2040
+    secrets: inherit
